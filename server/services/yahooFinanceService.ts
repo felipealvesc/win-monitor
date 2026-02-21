@@ -28,11 +28,22 @@ export interface MarketDataResponse {
   name?: string;
 }
 
-const YAHOO_QUOTE_API = process.env.YAHOO_QUOTE_API_URL || 'https://query2.finance.yahoo.com/v7/finance/quote';
-const YAHOO_CHART_API = process.env.YAHOO_CHART_API_URL || 'https://query2.finance.yahoo.com/v8/finance/chart';
-const YAHOO_REFERER = process.env.YAHOO_REFERER || 'https://finance.yahoo.com/';
-const YAHOO_X_API_HOST = process.env.YAHOO_X_API_HOST;
-const YAHOO_X_API_KEY = process.env.YAHOO_X_API_KEY;
+
+interface YahooConfig {
+  quoteApi: string;
+  chartApi: string;
+  referer: string;
+  xApiHost?: string;
+  xApiKey?: string;
+}
+
+const getYahooConfig = (): YahooConfig => ({
+  quoteApi: process.env.YAHOO_QUOTE_API_URL || 'https://query2.finance.yahoo.com/v7/finance/quote',
+  chartApi: process.env.YAHOO_CHART_API_URL || 'https://query2.finance.yahoo.com/v8/finance/chart',
+  referer: process.env.YAHOO_REFERER || 'https://finance.yahoo.com/',
+  xApiHost: process.env.YAHOO_X_API_HOST,
+  xApiKey: process.env.YAHOO_X_API_KEY,
+});
 
 // Mapeamento de símbolos para Yahoo Finance
 const SYMBOL_MAP: Record<string, string> = {
@@ -43,18 +54,19 @@ const SYMBOL_MAP: Record<string, string> = {
 };
 
 const buildYahooHeaders = (): Record<string, string> => {
+  const config = getYahooConfig();
   const headers: Record<string, string> = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': 'application/json, text/plain, */*',
-    'Referer': YAHOO_REFERER,
+    'Referer': config.referer,
   };
 
-  if (YAHOO_X_API_HOST) {
-    headers['x-api-host'] = YAHOO_X_API_HOST;
+  if (config.xApiHost) {
+    headers['x-api-host'] = config.xApiHost;
   }
 
-  if (YAHOO_X_API_KEY) {
-    headers['x-api-key'] = YAHOO_X_API_KEY;
+  if (config.xApiKey) {
+    headers['x-api-key'] = config.xApiKey;
   }
 
   return headers;
@@ -62,7 +74,9 @@ const buildYahooHeaders = (): Record<string, string> => {
 
 export class YahooFinanceService {
   private static async fetchQuoteFromChart(symbol: string): Promise<YahooFinanceQuote | null> {
-    const response = await axios.get(`${YAHOO_CHART_API}/${encodeURIComponent(symbol)}`, {
+    const config = getYahooConfig();
+
+    const response = await axios.get(`${config.chartApi}/${encodeURIComponent(symbol)}`, {
       params: {
         interval: '1d',
         range: '5d',
@@ -120,7 +134,7 @@ export class YahooFinanceService {
       let quote: YahooFinanceQuote | null = null;
 
       try {
-        const response = await axios.get(YAHOO_QUOTE_API, {
+        const response = await axios.get(getYahooConfig().quoteApi, {
           params: {
             symbols: yahooSymbol,
             lang: 'pt-BR',
@@ -204,7 +218,7 @@ export class YahooFinanceService {
     try {
       const yahooSymbol = SYMBOL_MAP[symbol.toUpperCase()] || symbol;
 
-      const response = await axios.get(`${YAHOO_CHART_API}/${encodeURIComponent(yahooSymbol)}`, {
+      const response = await axios.get(`${getYahooConfig().chartApi}/${encodeURIComponent(yahooSymbol)}`, {
         params: {
           interval,
           range,

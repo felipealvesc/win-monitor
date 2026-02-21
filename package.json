@@ -4,12 +4,14 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "dev": "vite --host",
+    "dev": "sh -c 'PORT=3001 tsx server/index.ts & vite --host --port 3000'",
     "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
     "start": "NODE_ENV=production node dist/index.js",
     "preview": "vite preview --host",
     "check": "tsc --noEmit",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "dev:server": "PORT=3001 tsx server/index.ts",
+    "dev:client": "vite --host --port 3000"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
