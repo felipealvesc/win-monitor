@@ -28,8 +28,11 @@ export interface MarketDataResponse {
   name?: string;
 }
 
-const YAHOO_QUOTE_API = 'https://query2.finance.yahoo.com/v7/finance/quote';
-const YAHOO_CHART_API = 'https://query2.finance.yahoo.com/v8/finance/chart';
+const YAHOO_QUOTE_API = process.env.YAHOO_QUOTE_API_URL || 'https://query2.finance.yahoo.com/v7/finance/quote';
+const YAHOO_CHART_API = process.env.YAHOO_CHART_API_URL || 'https://query2.finance.yahoo.com/v8/finance/chart';
+const YAHOO_REFERER = process.env.YAHOO_REFERER || 'https://finance.yahoo.com/';
+const YAHOO_X_API_HOST = process.env.YAHOO_X_API_HOST;
+const YAHOO_X_API_KEY = process.env.YAHOO_X_API_KEY;
 
 // Mapeamento de símbolos para Yahoo Finance
 const SYMBOL_MAP: Record<string, string> = {
@@ -37,6 +40,24 @@ const SYMBOL_MAP: Record<string, string> = {
   'WIN': '^BVSP',         // Mini Índice
   'IBOV': '^BVSP',        // Bovespa
   'BVSP': '^BVSP',        // Bovespa
+};
+
+const buildYahooHeaders = (): Record<string, string> => {
+  const headers: Record<string, string> = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Referer': YAHOO_REFERER,
+  };
+
+  if (YAHOO_X_API_HOST) {
+    headers['x-api-host'] = YAHOO_X_API_HOST;
+  }
+
+  if (YAHOO_X_API_KEY) {
+    headers['x-api-key'] = YAHOO_X_API_KEY;
+  }
+
+  return headers;
 };
 
 export class YahooFinanceService {
@@ -47,11 +68,7 @@ export class YahooFinanceService {
         range: '5d',
       },
       timeout: 10000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Referer': 'https://finance.yahoo.com/',
-      },
+      headers: buildYahooHeaders(),
     });
 
     const result = response.data?.chart?.result?.[0];
@@ -97,7 +114,7 @@ export class YahooFinanceService {
   static async fetchQuote(symbol: string): Promise<MarketDataResponse | null> {
     try {
       const yahooSymbol = SYMBOL_MAP[symbol.toUpperCase()] || symbol;
-      
+
       console.log(`Buscando dados de ${symbol} (${yahooSymbol}) no Yahoo Finance...`);
 
       let quote: YahooFinanceQuote | null = null;
@@ -110,11 +127,7 @@ export class YahooFinanceService {
             region: 'BR',
           },
           timeout: 10000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Referer': 'https://finance.yahoo.com/',
-          },
+          headers: buildYahooHeaders(),
         });
 
         if (response.data?.quoteResponse?.result?.length > 0) {
@@ -138,12 +151,12 @@ export class YahooFinanceService {
       const previousClose = quote.regularMarketPreviousClose || 0;
 
       // Calcular variação percentual
-      const changePercent = previousClose > 0 
+      const changePercent = previousClose > 0
         ? Math.round(((currentPrice - previousClose) / previousClose) * 10000) / 100
         : 0;
 
       // Calcular variação em pontos (para mini índice, cada ponto = 0.20)
-      const changePoints = dayOpen > 0 
+      const changePoints = dayOpen > 0
         ? Math.round((currentPrice - dayOpen) / 0.20)
         : 0;
 
@@ -201,11 +214,7 @@ export class YahooFinanceService {
           region: 'BR',
         },
         timeout: 10000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json, text/plain, */*',
-          'Referer': 'https://finance.yahoo.com/',
-        },
+        headers: buildYahooHeaders(),
       });
 
       return response.data;
