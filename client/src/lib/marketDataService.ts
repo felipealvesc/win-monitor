@@ -1,8 +1,8 @@
 import { MarketData } from '@/types/market';
-import { YahooFinanceClient } from './yahooFinanceClient';
 
 /**
- * Serviço de dados do mercado que chama Yahoo Finance API diretamente
+ * Serviço de dados do mercado consumindo API interna (/api/market).
+ * Evita chamadas diretas do browser ao Yahoo para não sofrer CORS.
  */
 export class MarketDataService {
   private static readonly BASE_URL = '/api/market';
@@ -11,21 +11,65 @@ export class MarketDataService {
    * Busca dados do mini índice WIN
    */
   static async fetchWINData(): Promise<MarketData | null> {
-    return YahooFinanceClient.fetchQuote('WINJ26');
+    return this.fetchQuote('WINJ26');
   }
 
   /**
-   * Busca dados de um síbolo específ ico
+   * Busca dados de um símbolo específico
    */
   static async fetchQuote(symbol: string): Promise<MarketData | null> {
-    return YahooFinanceClient.fetchQuote(symbol);
+    try {
+      const response = await fetch(`${this.BASE_URL}/quote/${symbol}`);
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      return {
+        ...data,
+        timestamp: data?.timestamp ? new Date(data.timestamp) : new Date(),
+      } as MarketData;
+    } catch (error) {
+      console.error(`Erro ao buscar dados de ${symbol}:`, error);
+      return null;
+    }
   }
 
   /**
-   * Busca dados de múltiplos síbmbolos
+   * Busca dados de múltiplos símbolos
    */
   static async fetchMultipleSymbols(symbols: string[]): Promise<Record<string, MarketData | null>> {
-    return YahooFinanceClient.fetchMultipleQuotes(symbols);
+    try {
+      const symbolsParam = symbols.join(',');
+      const response = await fetch(`${this.BASE_URL}/quotes?symbols=${encodeURIComponent(symbolsParam)}`);
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const normalized: Record<string, MarketData | null> = {};
+
+      for (const [symbol, value] of Object.entries(data)) {
+        if (!value) {
+          normalized[symbol] = null;
+          continue;
+        }
+
+        const item = value as any;
+        normalized[symbol] = {
+          ...item,
+          timestamp: item?.timestamp ? new Date(item.timestamp) : new Date(),
+        } as MarketData;
+      }
+
+      return normalized;
+    } catch (error) {
+      console.error('Erro ao buscar múltiplos símbolos:', error);
+      return {};
+    }
   }
 
   /**
