@@ -28,8 +28,22 @@ export interface MarketDataResponse {
   name?: string;
 }
 
-const YAHOO_FINANCE_API = 'https://query1.finance.yahoo.com/v10/finance/quoteSummary';
-const YAHOO_QUOTE_API = 'https://query1.finance.yahoo.com/v7/finance/quote';
+
+interface YahooConfig {
+  quoteApi: string;
+  chartApi: string;
+  referer: string;
+  xApiHost?: string;
+  xApiKey?: string;
+}
+
+const getYahooConfig = (): YahooConfig => ({
+  quoteApi: process.env.YAHOO_QUOTE_API_URL || 'https://query2.finance.yahoo.com/v7/finance/quote',
+  chartApi: process.env.YAHOO_CHART_API_URL || 'https://query2.finance.yahoo.com/v8/finance/chart',
+  referer: process.env.YAHOO_REFERER || 'https://finance.yahoo.com/',
+  xApiHost: process.env.YAHOO_X_API_HOST,
+  xApiKey: process.env.YAHOO_X_API_KEY,
+});
 
 // Mapeamento de símbolos para Yahoo Finance
 const SYMBOL_MAP: Record<string, string> = {
@@ -39,46 +53,124 @@ const SYMBOL_MAP: Record<string, string> = {
   'BVSP': '^BVSP',        // Bovespa
 };
 
+const buildYahooHeaders = (): Record<string, string> => {
+  const config = getYahooConfig();
+  const headers: Record<string, string> = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Referer': config.referer,
+  };
+
+  if (config.xApiHost) {
+    headers['x-api-host'] = config.xApiHost;
+  }
+
+  if (config.xApiKey) {
+    headers['x-api-key'] = config.xApiKey;
+  }
+
+  return headers;
+};
+
 export class YahooFinanceService {
+  private static async fetchQuoteFromChart(symbol: string): Promise<YahooFinanceQuote | null> {
+    const config = getYahooConfig();
+
+    const response = await axios.get(`${config.chartApi}/${encodeURIComponent(symbol)}`, {
+      params: {
+        interval: '1d',
+        range: '5d',
+      },
+      timeout: 10000,
+      headers: buildYahooHeaders(),
+    });
+
+    const result = response.data?.chart?.result?.[0];
+    const meta = result?.meta;
+    const quoteData = result?.indicators?.quote?.[0];
+
+    if (!meta || !quoteData) {
+      return null;
+    }
+
+    const firstValid = (values?: Array<number | null>): number => {
+      if (!values || values.length === 0) {
+        return 0;
+      }
+
+      for (let i = values.length - 1; i >= 0; i -= 1) {
+        const value = values[i];
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          return value;
+        }
+      }
+
+      return 0;
+    };
+
+    return {
+      symbol: meta.symbol || symbol,
+      regularMarketPrice: meta.regularMarketPrice || firstValid(quoteData.close),
+      regularMarketOpen: firstValid(quoteData.open),
+      regularMarketDayHigh: firstValid(quoteData.high),
+      regularMarketDayLow: firstValid(quoteData.low),
+      regularMarketVolume: firstValid(quoteData.volume),
+      regularMarketPreviousClose: meta.previousClose || 0,
+      currency: meta.currency || 'BRL',
+      longName: meta.longName,
+      exchangeName: meta.exchangeName,
+    };
+  }
+
   /**
    * Busca dados de um símbolo no Yahoo Finance
    */
   static async fetchQuote(symbol: string): Promise<MarketDataResponse | null> {
     try {
       const yahooSymbol = SYMBOL_MAP[symbol.toUpperCase()] || symbol;
-      
+
       console.log(`Buscando dados de ${symbol} (${yahooSymbol}) no Yahoo Finance...`);
 
-      const response = await axios.get(YAHOO_QUOTE_API, {
-        params: {
-          symbols: yahooSymbol,
-          fields: 'symbol,regularMarketPrice,regularMarketOpen,regularMarketDayHigh,regularMarketDayLow,regularMarketVolume,regularMarketPreviousClose,currency,longName,exchangeName',
-          formatted: 'true',
-        },
-        timeout: 10000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-      });
+      let quote: YahooFinanceQuote | null = null;
 
-      if (!response.data.quoteResponse || !response.data.quoteResponse.result || response.data.quoteResponse.result.length === 0) {
+      try {
+        const response = await axios.get(getYahooConfig().quoteApi, {
+          params: {
+            symbols: yahooSymbol,
+            lang: 'pt-BR',
+            region: 'BR',
+          },
+          timeout: 10000,
+          headers: buildYahooHeaders(),
+        });
+
+        if (response.data?.quoteResponse?.result?.length > 0) {
+          quote = response.data.quoteResponse.result[0] as YahooFinanceQuote;
+        }
+      } catch (quoteError) {
+        console.warn(`Falha no endpoint de quote para ${yahooSymbol}, tentando chart...`, quoteError instanceof Error ? quoteError.message : quoteError);
+      }
+
+      if (!quote) {
+        quote = await this.fetchQuoteFromChart(yahooSymbol);
+      }
+
+      if (!quote) {
         console.warn(`Nenhum resultado encontrado para ${yahooSymbol}`);
         return null;
       }
-
-      const quote = response.data.quoteResponse.result[0] as YahooFinanceQuote;
 
       const currentPrice = quote.regularMarketPrice || 0;
       const dayOpen = quote.regularMarketOpen || 0;
       const previousClose = quote.regularMarketPreviousClose || 0;
 
       // Calcular variação percentual
-      const changePercent = previousClose > 0 
+      const changePercent = previousClose > 0
         ? Math.round(((currentPrice - previousClose) / previousClose) * 10000) / 100
         : 0;
 
       // Calcular variação em pontos (para mini índice, cada ponto = 0.20)
-      const changePoints = dayOpen > 0 
+      const changePoints = dayOpen > 0
         ? Math.round((currentPrice - dayOpen) / 0.20)
         : 0;
 
@@ -126,17 +218,17 @@ export class YahooFinanceService {
     try {
       const yahooSymbol = SYMBOL_MAP[symbol.toUpperCase()] || symbol;
 
-      const response = await axios.get('https://query1.finance.yahoo.com/v8/finance/chart/' + yahooSymbol, {
+      const response = await axios.get(`${getYahooConfig().chartApi}/${encodeURIComponent(yahooSymbol)}`, {
         params: {
           interval,
           range,
           includePrePost: 'false',
           events: 'div,split',
+          lang: 'pt-BR',
+          region: 'BR',
         },
         timeout: 10000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
+        headers: buildYahooHeaders(),
       });
 
       return response.data;
