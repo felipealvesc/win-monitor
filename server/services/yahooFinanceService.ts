@@ -1,16 +1,15 @@
 import axios from 'axios';
 
-export interface YahooFinanceQuote {
+export interface MassiveQuoteData {
   symbol: string;
-  regularMarketPrice: number;
-  regularMarketOpen: number;
-  regularMarketDayHigh: number;
-  regularMarketDayLow: number;
-  regularMarketVolume: number;
-  regularMarketPreviousClose: number;
+  currentPrice: number;
+  dayOpen: number;
+  dayHigh: number;
+  dayLow: number;
+  volume: number;
+  previousClose: number;
   currency: string;
-  longName?: string;
-  exchangeName?: string;
+  name?: string;
 }
 
 export interface MarketDataResponse {
@@ -28,148 +27,180 @@ export interface MarketDataResponse {
   name?: string;
 }
 
-
-interface YahooConfig {
-  quoteApi: string;
-  chartApi: string;
-  referer: string;
-  xApiHost?: string;
-  xApiKey?: string;
+interface MassiveConfig {
+  baseUrl: string;
+  apiKey?: string;
 }
 
-const getYahooConfig = (): YahooConfig => ({
-  quoteApi: process.env.YAHOO_QUOTE_API_URL || 'https://query2.finance.yahoo.com/v7/finance/quote',
-  chartApi: process.env.YAHOO_CHART_API_URL || 'https://query2.finance.yahoo.com/v8/finance/chart',
-  referer: process.env.YAHOO_REFERER || 'https://finance.yahoo.com/',
-  xApiHost: process.env.YAHOO_X_API_HOST,
-  xApiKey: process.env.YAHOO_X_API_KEY,
+const getMassiveConfig = (): MassiveConfig => ({
+  baseUrl: process.env.MASSIVE_BASE_URL || 'https://api.massive.com',
+  apiKey: process.env.MASSIVE_API_KEY,
 });
 
-// Mapeamento de símbolos para Yahoo Finance
+// Mapeamento de símbolos para Massive (Polygon)
 const SYMBOL_MAP: Record<string, string> = {
-  'WINJ26': '^BVSP',      // Mini Índice (usando Bovespa como proxy)
-  'WIN': '^BVSP',         // Mini Índice
-  'IBOV': '^BVSP',        // Bovespa
-  'BVSP': '^BVSP',        // Bovespa
+  WINJ26: 'I:IBOV', // Mini Índice (usando IBOV como proxy)
+  WIN: 'I:IBOV',
+  IBOV: 'I:IBOV',
+  BVSP: 'I:IBOV',
 };
 
-const buildYahooHeaders = (): Record<string, string> => {
-  const config = getYahooConfig();
-  const headers: Record<string, string> = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Referer': config.referer,
+const buildMassiveParams = (params: Record<string, string | number | boolean>) => {
+  const config = getMassiveConfig();
+  return {
+    ...params,
+    ...(config.apiKey ? { apiKey: config.apiKey } : {}),
   };
+};
 
-  if (config.xApiHost) {
-    headers['x-api-host'] = config.xApiHost;
+const toISOStringDate = (date: Date): string => date.toISOString().split('T')[0];
+
+const getHistoricalWindow = (range: '1d' | '5d' | '1mo' | '3mo' | '6mo' | '1y' | '2y' | '5y' | '10y' | 'ytd' | 'max'): { from: string; to: string } => {
+  const today = new Date();
+  const from = new Date(today);
+
+  switch (range) {
+    case '1d':
+      from.setDate(today.getDate() - 1);
+      break;
+    case '5d':
+      from.setDate(today.getDate() - 5);
+      break;
+    case '1mo':
+      from.setMonth(today.getMonth() - 1);
+      break;
+    case '3mo':
+      from.setMonth(today.getMonth() - 3);
+      break;
+    case '6mo':
+      from.setMonth(today.getMonth() - 6);
+      break;
+    case '1y':
+      from.setFullYear(today.getFullYear() - 1);
+      break;
+    case '2y':
+      from.setFullYear(today.getFullYear() - 2);
+      break;
+    case '5y':
+      from.setFullYear(today.getFullYear() - 5);
+      break;
+    case '10y':
+      from.setFullYear(today.getFullYear() - 10);
+      break;
+    case 'ytd':
+      from.setMonth(0, 1);
+      break;
+    case 'max':
+      from.setFullYear(today.getFullYear() - 20);
+      break;
+    default:
+      from.setMonth(today.getMonth() - 1);
   }
 
-  if (config.xApiKey) {
-    headers['x-api-key'] = config.xApiKey;
-  }
+  return {
+    from: toISOStringDate(from),
+    to: toISOStringDate(today),
+  };
+};
 
-  return headers;
+const getIntervalConfig = (interval: '1m' | '5m' | '15m' | '30m' | '60m' | '1d'): { multiplier: number; timespan: 'minute' | 'day' } => {
+  switch (interval) {
+    case '1m':
+      return { multiplier: 1, timespan: 'minute' };
+    case '5m':
+      return { multiplier: 5, timespan: 'minute' };
+    case '15m':
+      return { multiplier: 15, timespan: 'minute' };
+    case '30m':
+      return { multiplier: 30, timespan: 'minute' };
+    case '60m':
+      return { multiplier: 60, timespan: 'minute' };
+    case '1d':
+    default:
+      return { multiplier: 1, timespan: 'day' };
+  }
 };
 
 export class YahooFinanceService {
-  private static async fetchQuoteFromChart(symbol: string): Promise<YahooFinanceQuote | null> {
-    const config = getYahooConfig();
+  private static async fetchSnapshot(symbol: string): Promise<MassiveQuoteData | null> {
+    const config = getMassiveConfig();
 
-    const response = await axios.get(`${config.chartApi}/${encodeURIComponent(symbol)}`, {
-      params: {
-        interval: '1d',
-        range: '5d',
-      },
+    const response = await axios.get(`${config.baseUrl}/v2/snapshot/locale/us/markets/stocks/tickers/${encodeURIComponent(symbol)}`, {
+      params: buildMassiveParams({}),
       timeout: 10000,
-      headers: buildYahooHeaders(),
     });
 
-    const result = response.data?.chart?.result?.[0];
-    const meta = result?.meta;
-    const quoteData = result?.indicators?.quote?.[0];
-
-    if (!meta || !quoteData) {
+    const ticker = response.data?.ticker;
+    if (!ticker) {
       return null;
     }
 
-    const firstValid = (values?: Array<number | null>): number => {
-      if (!values || values.length === 0) {
-        return 0;
-      }
-
-      for (let i = values.length - 1; i >= 0; i -= 1) {
-        const value = values[i];
-        if (typeof value === 'number' && Number.isFinite(value)) {
-          return value;
-        }
-      }
-
-      return 0;
+    return {
+      symbol,
+      currentPrice: Number(ticker?.lastTrade?.p || ticker?.day?.c || 0),
+      dayOpen: Number(ticker?.day?.o || 0),
+      dayHigh: Number(ticker?.day?.h || 0),
+      dayLow: Number(ticker?.day?.l || 0),
+      volume: Number(ticker?.day?.v || 0),
+      previousClose: Number(ticker?.prevDay?.c || 0),
+      currency: 'USD',
+      name: ticker?.ticker,
     };
+  }
+
+  private static async fetchPreviousAggregate(symbol: string): Promise<MassiveQuoteData | null> {
+    const config = getMassiveConfig();
+
+    const response = await axios.get(`${config.baseUrl}/v2/aggs/ticker/${encodeURIComponent(symbol)}/prev`, {
+      params: buildMassiveParams({ adjusted: true }),
+      timeout: 10000,
+    });
+
+    const result = response.data?.results?.[0];
+    if (!result) {
+      return null;
+    }
 
     return {
-      symbol: meta.symbol || symbol,
-      regularMarketPrice: meta.regularMarketPrice || firstValid(quoteData.close),
-      regularMarketOpen: firstValid(quoteData.open),
-      regularMarketDayHigh: firstValid(quoteData.high),
-      regularMarketDayLow: firstValid(quoteData.low),
-      regularMarketVolume: firstValid(quoteData.volume),
-      regularMarketPreviousClose: meta.previousClose || 0,
-      currency: meta.currency || 'BRL',
-      longName: meta.longName,
-      exchangeName: meta.exchangeName,
+      symbol,
+      currentPrice: Number(result.c || 0),
+      dayOpen: Number(result.o || 0),
+      dayHigh: Number(result.h || 0),
+      dayLow: Number(result.l || 0),
+      volume: Number(result.v || 0),
+      previousClose: Number(result.o || 0),
+      currency: 'USD',
+      name: symbol,
     };
   }
 
   /**
-   * Busca dados de um símbolo no Yahoo Finance
+   * Busca dados de um símbolo via Massive API
    */
   static async fetchQuote(symbol: string): Promise<MarketDataResponse | null> {
     try {
-      const yahooSymbol = SYMBOL_MAP[symbol.toUpperCase()] || symbol;
+      const massiveSymbol = SYMBOL_MAP[symbol.toUpperCase()] || symbol;
 
-      console.log(`Buscando dados de ${symbol} (${yahooSymbol}) no Yahoo Finance...`);
+      console.log(`Buscando dados de ${symbol} (${massiveSymbol}) na Massive API...`);
 
-      let quote: YahooFinanceQuote | null = null;
-
-      try {
-        const response = await axios.get(getYahooConfig().quoteApi, {
-          params: {
-            symbols: yahooSymbol,
-            lang: 'pt-BR',
-            region: 'BR',
-          },
-          timeout: 10000,
-          headers: buildYahooHeaders(),
-        });
-
-        if (response.data?.quoteResponse?.result?.length > 0) {
-          quote = response.data.quoteResponse.result[0] as YahooFinanceQuote;
-        }
-      } catch (quoteError) {
-        console.warn(`Falha no endpoint de quote para ${yahooSymbol}, tentando chart...`, quoteError instanceof Error ? quoteError.message : quoteError);
+      let quote = await this.fetchSnapshot(massiveSymbol);
+      if (!quote) {
+        quote = await this.fetchPreviousAggregate(massiveSymbol);
       }
 
       if (!quote) {
-        quote = await this.fetchQuoteFromChart(yahooSymbol);
-      }
-
-      if (!quote) {
-        console.warn(`Nenhum resultado encontrado para ${yahooSymbol}`);
+        console.warn(`Nenhum resultado encontrado para ${massiveSymbol}`);
         return null;
       }
 
-      const currentPrice = quote.regularMarketPrice || 0;
-      const dayOpen = quote.regularMarketOpen || 0;
-      const previousClose = quote.regularMarketPreviousClose || 0;
+      const currentPrice = quote.currentPrice || 0;
+      const dayOpen = quote.dayOpen || 0;
+      const previousClose = quote.previousClose || 0;
 
-      // Calcular variação percentual
       const changePercent = previousClose > 0
         ? Math.round(((currentPrice - previousClose) / previousClose) * 10000) / 100
         : 0;
 
-      // Calcular variação em pontos (para mini índice, cada ponto = 0.20)
       const changePoints = dayOpen > 0
         ? Math.round((currentPrice - dayOpen) / 0.20)
         : 0;
@@ -178,15 +209,15 @@ export class YahooFinanceService {
         symbol: symbol.toUpperCase(),
         currentPrice,
         dayOpen,
-        dayHigh: quote.regularMarketDayHigh || 0,
-        dayLow: quote.regularMarketDayLow || 0,
-        volume: quote.regularMarketVolume || 0,
+        dayHigh: quote.dayHigh || 0,
+        dayLow: quote.dayLow || 0,
+        volume: quote.volume || 0,
         previousClose,
         changePercent,
         changePoints,
         timestamp: new Date().toISOString(),
-        currency: quote.currency || 'BRL',
-        name: quote.longName,
+        currency: quote.currency || 'USD',
+        name: quote.name,
       };
     } catch (error) {
       console.error(`Erro ao buscar dados de ${symbol}:`, error instanceof Error ? error.message : error);
@@ -216,19 +247,14 @@ export class YahooFinanceService {
     range: '1d' | '5d' | '1mo' | '3mo' | '6mo' | '1y' | '2y' | '5y' | '10y' | 'ytd' | 'max' = '1mo'
   ): Promise<any> {
     try {
-      const yahooSymbol = SYMBOL_MAP[symbol.toUpperCase()] || symbol;
+      const massiveSymbol = SYMBOL_MAP[symbol.toUpperCase()] || symbol;
+      const config = getMassiveConfig();
+      const { multiplier, timespan } = getIntervalConfig(interval);
+      const { from, to } = getHistoricalWindow(range);
 
-      const response = await axios.get(`${getYahooConfig().chartApi}/${encodeURIComponent(yahooSymbol)}`, {
-        params: {
-          interval,
-          range,
-          includePrePost: 'false',
-          events: 'div,split',
-          lang: 'pt-BR',
-          region: 'BR',
-        },
+      const response = await axios.get(`${config.baseUrl}/v2/aggs/ticker/${encodeURIComponent(massiveSymbol)}/range/${multiplier}/${timespan}/${from}/${to}`, {
+        params: buildMassiveParams({ adjusted: true, sort: 'asc', limit: 5000 }),
         timeout: 10000,
-        headers: buildYahooHeaders(),
       });
 
       return response.data;
@@ -249,6 +275,6 @@ export class YahooFinanceService {
    * Valida se um símbolo é válido
    */
   static isValidSymbol(symbol: string): boolean {
-    return SYMBOL_MAP.hasOwnProperty(symbol.toUpperCase());
+    return Object.prototype.hasOwnProperty.call(SYMBOL_MAP, symbol.toUpperCase());
   }
 }
