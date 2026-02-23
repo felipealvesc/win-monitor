@@ -12,6 +12,15 @@ import { TradeOperation, TaxDeclaration } from '@/types/operations';
 import OperationsForm from '@/components/OperationsForm';
 import TaxDeclarationReport from '@/components/TaxDeclarationReport';
 
+const WEBHOOK_URL = import.meta.env.VITE_SIGNAL_WEBHOOK_URL || 'https://example.com/webhook';
+const SIGNAL_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+const OHLC_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const MIN_RISK_REWARD = 1.5;
+const EXTREME_BUFFER_POINTS = 100;
+const DAILY_TARGET = 1000;
+const DAILY_STOP = -600;
+const MAX_TRADES = 5;
+
 export default function Home() {
   const [accountSize, setAccountSize] = useState(10000);
   const [currentPrice, setCurrentPrice] = useState(125000);
@@ -26,6 +35,9 @@ export default function Home() {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState<number | undefined>(undefined);
   const [activeTab, setActiveTab] = useState<'simulator' | 'operations' | 'taxes'>('simulator');
+  const [lastExtreme, setLastExtreme] = useState<'HIGH' | 'LOW' | null>(null);
+  const [extremePrice, setExtremePrice] = useState<number | null>(null);
+  const [tradeLockedReason, setTradeLockedReason] = useState<string | null>(null);
 
   const fetchMarketData = async () => {
     setLoading(true);
@@ -44,39 +56,209 @@ export default function Home() {
     }
   };
 
+  const getTodayTrades = () => {
+    const today = new Date().toDateString();
+    return operations.filter(
+      op => op.status === 'CLOSED' && op.exitDate && new Date(op.exitDate).toDateString() === today
+    );
+  };
+
+  const getTodayPnL = () => {
+    return getTodayTrades().reduce((acc, op) => {
+      const entryValue = op.quantity * op.entryPrice;
+      const exitValue = op.quantity * (op.exitPrice || 0);
+      const gross = op.type === 'BUY' ? exitValue - entryValue : entryValue - exitValue;
+      return acc + (gross - op.brokerageFee);
+    }, 0);
+  };
+
+  const getTradeLockReason = () => {
+    const todayTrades = getTodayTrades();
+    const todayPnL = getTodayPnL();
+
+    if (todayPnL >= DAILY_TARGET) return 'Daily target atingido';
+    if (todayPnL <= DAILY_STOP) return 'Daily stop atingido';
+    if (todayTrades.length >= MAX_TRADES) return 'Máximo de operações do dia atingido';
+    return null;
+  };
+
   const calculateRisk = () => {
     const dailyChange = RiskCalculator.calculateDailyChangePercent(currentPrice, dayOpen);
     const hasOnePercent = RiskCalculator.checkOnePercentThreshold(currentPrice, dayOpen);
+    const lockReason = getTradeLockReason();
+    setTradeLockedReason(lockReason);
 
-    const stopLevels = RiskCalculator.calculateStopLevels(
-      currentPrice,
-      dailyChange > 0 ? 'uptrend' : 'downtrend',
-      dayLow,
-      dayHigh,
-      dayHigh - dayLow
+    const madeNewHigh = currentPrice >= dayHigh;
+    const madeNewLow = currentPrice <= dayLow;
+
+    if (madeNewHigh) {
+      setLastExtreme('HIGH');
+      setExtremePrice(currentPrice);
+    }
+
+    if (madeNewLow) {
+      setLastExtreme('LOW');
+      setExtremePrice(currentPrice);
+    }
+
+    const effectiveExtreme = extremePrice ?? (lastExtreme === 'HIGH' ? dayHigh : dayLow);
+    const range = Math.max(dayHigh - dayLow, 1);
+    const pivotBuffer = Math.max(range * 0.1, 50);
+
+    const reversalConfirmed =
+      lastExtreme === 'HIGH'
+        ? currentPrice <= (effectiveExtreme || dayHigh) - pivotBuffer
+        : lastExtreme === 'LOW'
+          ? currentPrice >= (effectiveExtreme || dayLow) + pivotBuffer
+          : false;
+
+    const technicalStopPrice =
+      lastExtreme === 'HIGH'
+        ? (effectiveExtreme || dayHigh) + EXTREME_BUFFER_POINTS
+        : lastExtreme === 'LOW'
+          ? (effectiveExtreme || dayLow) - EXTREME_BUFFER_POINTS
+          : currentPrice;
+
+    const stopLossPoints = Math.max(
+      1,
+      Math.round(Math.abs((currentPrice - technicalStopPrice) / 0.2))
     );
+
+    const takeProfitPoints = stopLossPoints;
 
     const risk = RiskCalculator.calculateFullRisk(
       currentPrice,
       accountSize,
-      stopLevels.stopLossPoints,
-      stopLevels.takeProfitPoints,
+      stopLossPoints,
+      takeProfitPoints,
       1
     );
+
+    const isBusinessRuleValid =
+      hasOnePercent && (madeNewHigh || madeNewLow || !!lastExtreme) && reversalConfirmed;
+    const hasMinRiskReward = risk.riskRewardRatio >= MIN_RISK_REWARD;
+    const canTrade = isBusinessRuleValid && hasMinRiskReward && !lockReason;
 
     setRiskCalculation(risk);
 
     const signal: TradeSignal = {
-      type: hasOnePercent ? (dailyChange > 0 ? 'BUY' : 'SELL') : 'WAIT',
+      type: canTrade ? (dailyChange > 0 ? 'SELL' : 'BUY') : 'WAIT',
       confidence: Math.min(100, Math.abs(dailyChange) * 50),
       reason: [
         `Variacao diaria: ${dailyChange.toFixed(2)}%`,
         `Razao risco/recompensa: ${risk.riskRewardRatio}`,
         `Contratos permitidos: ${risk.contractsAllowed}`,
+        `Stop técnico: ${technicalStopPrice.toFixed(0)} (${stopLossPoints} pontos)`,
+        `Parcial: 1R | Trailing: ativado após 1R`,
+        lockReason ? `TRAVA: ${lockReason}` : 'Sem trava diária',
       ],
       conditions: {
         priceMovement: hasOnePercent,
-        breakoutConfirmed: Math.abs(dailyChange) > 1.5,
+        breakoutConfirmed: reversalConfirmed,
+        volumeAboveAverage: true,
+        alignmentMultiframe: madeNewHigh || madeNewLow || !!lastExtreme,
+        technicalAlignment: hasMinRiskReward,
+      },
+      timestamp: new Date(),
+    };
+
+    setTradeSignal(signal);
+  };
+
+
+  const sendSignalWebhook = async (signal: TradeSignal, risk: RiskCalculation, dailyChangeValue: number) => {
+    try {
+      const payload = {
+        message: `Sinal ${signal.type} detectado para WINJ26 com variação de ${dailyChangeValue.toFixed(2)}%`,
+        symbol: 'WINJ26',
+        signalType: signal.type,
+        confidence: signal.confidence,
+        market: {
+          currentPrice,
+          dayOpen,
+          dayHigh,
+          dayLow,
+          dailyChangePercent: dailyChangeValue,
+        },
+        risk: {
+          contractsAllowed: risk.contractsAllowed,
+          maxRiskAmount: risk.maxRiskAmount,
+          stopLossPoints: risk.stopLossPoints,
+          takeProfitPoints: risk.takeProfitPoints,
+          riskRewardRatio: risk.riskRewardRatio,
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      await fetch(WEBHOOK_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (error) {
+      console.error('Erro ao enviar webhook de sinal:', error);
+    }
+  };
+
+  const checkSignalAndNotify = async () => {
+    const dailyChangeValue = RiskCalculator.calculateDailyChangePercent(currentPrice, dayOpen);
+    const hasOnePercent = RiskCalculator.checkOnePercentThreshold(currentPrice, dayOpen);
+    const lockReason = getTradeLockReason();
+
+    if (lockReason) {
+      return;
+    }
+
+    if (!hasOnePercent) {
+      return;
+    }
+
+    const range = Math.max(dayHigh - dayLow, 1);
+    const pivotBuffer = Math.max(range * 0.1, 50);
+    const effectiveExtreme = extremePrice ?? (lastExtreme === 'HIGH' ? dayHigh : dayLow);
+    const reversalConfirmed =
+      lastExtreme === 'HIGH'
+        ? currentPrice <= (effectiveExtreme || dayHigh) - pivotBuffer
+        : lastExtreme === 'LOW'
+          ? currentPrice >= (effectiveExtreme || dayLow) + pivotBuffer
+          : false;
+
+    const technicalStopPrice =
+      lastExtreme === 'HIGH'
+        ? (effectiveExtreme || dayHigh) + EXTREME_BUFFER_POINTS
+        : lastExtreme === 'LOW'
+          ? (effectiveExtreme || dayLow) - EXTREME_BUFFER_POINTS
+          : currentPrice;
+
+    const stopLossPoints = Math.max(1, Math.round(Math.abs((currentPrice - technicalStopPrice) / 0.2)));
+    const takeProfitPoints = stopLossPoints;
+
+    const risk = RiskCalculator.calculateFullRisk(
+      currentPrice,
+      accountSize,
+      stopLossPoints,
+      takeProfitPoints,
+      1
+    );
+
+    const hasMinRiskReward = risk.riskRewardRatio >= MIN_RISK_REWARD;
+    if (!reversalConfirmed || !hasMinRiskReward || !lastExtreme) {
+      return;
+    }
+
+    const signal: TradeSignal = {
+      type: dailyChangeValue > 0 ? 'SELL' : 'BUY',
+      confidence: Math.min(100, Math.abs(dailyChangeValue) * 50),
+      reason: [
+        `Variacao diaria: ${dailyChangeValue.toFixed(2)}%`,
+        `Razao risco/recompensa: ${risk.riskRewardRatio}`,
+        `Contratos permitidos: ${risk.contractsAllowed}`,
+      ],
+      conditions: {
+        priceMovement: hasOnePercent,
+        breakoutConfirmed: Math.abs(dailyChangeValue) > 1.5,
         volumeAboveAverage: true,
         alignmentMultiframe: true,
         technicalAlignment: true,
@@ -84,7 +266,7 @@ export default function Home() {
       timestamp: new Date(),
     };
 
-    setTradeSignal(signal);
+    await sendSignalWebhook(signal, risk, dailyChangeValue);
   };
 
   const handleAddOperation = (operation: TradeOperation) => {
@@ -111,7 +293,24 @@ export default function Home() {
 
   useEffect(() => {
     calculateRisk();
-  }, [accountSize, currentPrice, dayOpen, dayHigh, dayLow]);
+  }, [accountSize, currentPrice, dayOpen, dayHigh, dayLow, operations, lastExtreme, extremePrice]);
+
+  useEffect(() => {
+    fetchMarketData();
+    const timer = setInterval(() => {
+      fetchMarketData();
+    }, OHLC_REFRESH_INTERVAL_MS);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      checkSignalAndNotify();
+    }, SIGNAL_CHECK_INTERVAL_MS);
+
+    return () => clearInterval(timer);
+  }, [accountSize, currentPrice, dayOpen, dayHigh, dayLow, lastExtreme, extremePrice, operations]);
 
   const dailyChange = RiskCalculator.calculateDailyChangePercent(currentPrice, dayOpen);
   const isPositive = dailyChange > 0;
