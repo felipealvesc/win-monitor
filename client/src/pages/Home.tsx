@@ -67,7 +67,10 @@ export default function Home() {
     setRiskCalculation(risk);
 
     const signal: TradeSignal = {
-      type: hasOnePercent ? (dailyChange > 0 ? 'BUY' : 'SELL') : 'WAIT',
+      // Regra operacional solicitada:
+      // - Pico/variação positiva acima de 1% => sinal de VENDA
+      // - Pico/variação negativa acima de 1% => sinal de COMPRA
+      type: hasOnePercent ? (dailyChange > 0 ? 'SELL' : 'BUY') : 'WAIT',
       confidence: Math.min(100, Math.abs(dailyChange) * 50),
       reason: [
         `Variacao diaria: ${dailyChange.toFixed(2)}%`,
