@@ -4,7 +4,6 @@ import { createServer } from "http";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import marketDataRouter from "./routes/marketData";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,9 +57,6 @@ async function startServer() {
     process.env.NODE_ENV === "production"
       ? path.resolve(__dirname, "public")
       : path.resolve(__dirname, "..", "dist", "public");
-
-  // API Routes - DEVE VIR ANTES DE STATIC FILES
-  app.use('/api/market', marketDataRouter as any);
 
   // Serve static files from dist/public in production
   app.use(express.static(staticPath));
