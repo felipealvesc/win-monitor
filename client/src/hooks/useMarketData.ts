@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { MarketData } from '@/types/market';
+import { MarketDataService } from '@/lib/marketDataService';
 
 interface UseMarketDataOptions {
   autoFetch?: boolean;
@@ -17,13 +18,12 @@ export function useMarketData(symbol: string = 'WINJ26', options: UseMarketDataO
       setLoading(true);
       setError(null);
 
-      const response = await fetch(`/api/market/quote/${symbol}`);
+      const marketData = await MarketDataService.fetchQuote(symbol);
 
-      if (!response.ok) {
-        throw new Error(`Erro ${response.status}: ${response.statusText}`);
+      if (!marketData) {
+        throw new Error('Dados de mercado não encontrados');
       }
 
-      const marketData = await response.json();
       setData(marketData);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Erro ao buscar dados';
@@ -62,14 +62,7 @@ export function useMultipleMarketData(symbols: string[], options: UseMarketDataO
       setLoading(true);
       setError(null);
 
-      const symbolsParam = symbols.join(',');
-      const response = await fetch(`/api/market/quotes?symbols=${symbolsParam}`);
-
-      if (!response.ok) {
-        throw new Error(`Erro ${response.status}: ${response.statusText}`);
-      }
-
-      const marketData = await response.json();
+      const marketData = await MarketDataService.fetchMultipleSymbols(symbols);
       setData(marketData);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Erro ao buscar dados';
