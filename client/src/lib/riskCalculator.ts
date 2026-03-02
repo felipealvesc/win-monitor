@@ -56,7 +56,11 @@ export class RiskCalculator {
     if (riskPerContract <= 0) return 0;
 
     const contracts = Math.floor(maxRiskAmount / riskPerContract);
-    return Math.max(MIN_CONTRACT_SIZE, Math.min(contracts, MAX_LEVERAGE));
+    if (contracts < MIN_CONTRACT_SIZE) {
+      return 0;
+    }
+
+    return Math.min(contracts, MAX_LEVERAGE);
   }
 
   static calculateRiskRewardRatio(stopLossPoints: number, takeProfitPoints: number): number {
@@ -130,4 +134,3 @@ export class RiskCalculator {
     return Math.round((currentPrice - dayOpen) / POINT_VALUE);
   }
 }
-

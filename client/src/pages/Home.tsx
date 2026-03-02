@@ -1,288 +1,493 @@
-import { useState, useEffect } from 'react';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { AlertCircle, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
-import { RiskCalculator } from '@/lib/riskCalculator';
-import { MarketDataService } from '@/lib/marketDataService';
-import { TaxCalculator } from '@/lib/taxCalculator';
-import { MarketData, RiskCalculation, TradeSignal } from '@/types/market';
-import { TradeOperation, TaxDeclaration } from '@/types/operations';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Activity,
+  AlertCircle,
+  BellRing,
+  CandlestickChart,
+  ChartColumnBig,
+  CheckCircle2,
+  Database,
+  RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+  TrendingDown,
+  TrendingUp,
+  Wifi,
+  XCircle,
+} from 'lucide-react';
+import {
+  Bar,
+  BarChart as RechartsBarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart as RechartsLineChart,
+  ReferenceLine,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import { toast } from 'sonner';
 import OperationsForm from '@/components/OperationsForm';
 import TaxDeclarationReport from '@/components/TaxDeclarationReport';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+} from '@/components/ui/chart';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { MarketDataService } from '@/lib/marketDataService';
+import { Mt5Service } from '@/lib/mt5Service';
+import { TaxCalculator } from '@/lib/taxCalculator';
+import { buildMarketAnalysis } from '@/lib/tradingAnalysis';
+import { MarketAnalysis, Mt5Status } from '@/types/market';
+import { TaxDeclaration, TradeOperation } from '@/types/operations';
+
+const formatPoints = (value: number) =>
+  new Intl.NumberFormat('pt-BR', {
+    maximumFractionDigits: 2,
+  }).format(value);
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  }).format(value);
+
+const formatPercent = (value: number) => `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+
+const formatDateTime = (value: Date | string | null | undefined) => {
+  if (!value) {
+    return '--';
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const priceChartConfig = {
+  close: {
+    label: 'Fechamento',
+    color: 'var(--color-chart-3)',
+  },
+  sma20: {
+    label: 'SMA 20',
+    color: 'var(--color-chart-1)',
+  },
+};
+
+const returnsChartConfig = {
+  returnPercent: {
+    label: 'Retorno %',
+    color: 'var(--color-chart-3)',
+  },
+};
+
+const getTrendLabel = (trend: 'uptrend' | 'downtrend' | 'sideways') => {
+  if (trend === 'uptrend') {
+    return 'Alta';
+  }
+
+  if (trend === 'downtrend') {
+    return 'Baixa';
+  }
+
+  return 'Lateral';
+};
+
+const getTrendClasses = (trend: 'uptrend' | 'downtrend' | 'sideways') => {
+  if (trend === 'uptrend') {
+    return 'border-chart-1/25 bg-chart-1/8 text-chart-1';
+  }
+
+  if (trend === 'downtrend') {
+    return 'border-chart-2/25 bg-chart-2/8 text-chart-2';
+  }
+
+  return 'border-border bg-white text-muted-foreground';
+};
 
 export default function Home() {
+  const [symbol, setSymbol] = useState('WINJ26');
   const [accountSize, setAccountSize] = useState(10000);
-  const [currentPrice, setCurrentPrice] = useState(125000);
-  const [dayOpen, setDayOpen] = useState(124000);
-  const [dayHigh, setDayHigh] = useState(125500);
-  const [dayLow, setDayLow] = useState(123800);
-  const [riskCalculation, setRiskCalculation] = useState<RiskCalculation | null>(null);
-  const [tradeSignal, setTradeSignal] = useState<TradeSignal | null>(null);
+  const [riskPercentage, setRiskPercentage] = useState(1);
+  const [snapshot, setSnapshot] = useState<any | null>(null);
+  const [intradayHistory, setIntradayHistory] = useState<any | null>(null);
+  const [hourlyHistory, setHourlyHistory] = useState<any | null>(null);
+  const [dailyHistory, setDailyHistory] = useState<any | null>(null);
+  const [mt5Status, setMt5Status] = useState<Mt5Status | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sendingTelegramTest, setSendingTelegramTest] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
   const [operations, setOperations] = useState<TradeOperation[]>([]);
   const [taxDeclaration, setTaxDeclaration] = useState<TaxDeclaration | null>(null);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState<number | undefined>(undefined);
   const [activeTab, setActiveTab] = useState<'simulator' | 'operations' | 'taxes'>('simulator');
+  const lastSignalKeyRef = useRef<string | null>(null);
 
-  const fetchMarketData = async () => {
+  const refreshDashboard = useCallback(async () => {
     setLoading(true);
+    setError(null);
+
     try {
-      const data = await MarketDataService.fetchWINData();
-      if (data) {
-        setCurrentPrice(data.currentPrice);
-        setDayOpen(data.dayOpen);
-        setDayHigh(data.dayHigh);
-        setDayLow(data.dayLow);
+      const [quote, intraday, hourly, daily, mt5] = await Promise.all([
+        MarketDataService.fetchQuote(symbol),
+        MarketDataService.fetchHistoricalData(symbol, '5m', '5d'),
+        MarketDataService.fetchHistoricalData(symbol, '60m', '1mo'),
+        MarketDataService.fetchHistoricalData(symbol, '1d', '6mo'),
+        Mt5Service.fetchStatus(),
+      ]);
+
+      if (!quote) {
+        throw new Error('Nao foi possivel carregar a cotacao atual.');
       }
-    } catch (error) {
-      console.error('Erro ao buscar dados:', error);
+
+      setSnapshot(quote);
+      setIntradayHistory(intraday);
+      setHourlyHistory(hourly);
+      setDailyHistory(daily);
+      setMt5Status(mt5);
+      setLastRefreshAt(new Date());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao atualizar o dashboard');
     } finally {
       setLoading(false);
     }
-  };
+  }, [symbol]);
 
-  const calculateRisk = () => {
-    const dailyChange = RiskCalculator.calculateDailyChangePercent(currentPrice, dayOpen);
-    const hasOnePercent = RiskCalculator.checkOnePercentThreshold(currentPrice, dayOpen);
+  useEffect(() => {
+    refreshDashboard();
 
-    const stopLevels = RiskCalculator.calculateStopLevels(
-      currentPrice,
-      dailyChange > 0 ? 'uptrend' : 'downtrend',
-      dayLow,
-      dayHigh,
-      dayHigh - dayLow
-    );
+    const timer = window.setInterval(() => {
+      refreshDashboard();
+    }, 60000);
 
-    const risk = RiskCalculator.calculateFullRisk(
-      currentPrice,
+    return () => window.clearInterval(timer);
+  }, [refreshDashboard]);
+
+  const analysis = useMemo<MarketAnalysis | null>(() => {
+    if (!snapshot) {
+      return null;
+    }
+
+    return buildMarketAnalysis({
+      snapshot,
+      intradayResponse: intradayHistory,
+      hourlyResponse: hourlyHistory,
+      dailyResponse: dailyHistory,
       accountSize,
-      stopLevels.stopLossPoints,
-      stopLevels.takeProfitPoints,
-      1
-    );
+      riskPercentage,
+    });
+  }, [snapshot, intradayHistory, hourlyHistory, dailyHistory, accountSize, riskPercentage]);
 
-    setRiskCalculation(risk);
+  useEffect(() => {
+    if (!analysis) {
+      return;
+    }
 
-    const signal: TradeSignal = {
-      // Regra operacional solicitada:
-      // - Pico/variação positiva acima de 1% => sinal de VENDA
-      // - Pico/variação negativa acima de 1% => sinal de COMPRA
-      type: hasOnePercent ? (dailyChange > 0 ? 'SELL' : 'BUY') : 'WAIT',
-      confidence: Math.min(100, Math.abs(dailyChange) * 50),
-      reason: [
-        `Variacao diaria: ${dailyChange.toFixed(2)}%`,
-        `Razao risco/recompensa: ${risk.riskRewardRatio}`,
-        `Contratos permitidos: ${risk.contractsAllowed}`,
-      ],
-      conditions: {
-        priceMovement: hasOnePercent,
-        breakoutConfirmed: Math.abs(dailyChange) > 1.5,
-        volumeAboveAverage: true,
-        alignmentMultiframe: true,
-        technicalAlignment: true,
-      },
-      timestamp: new Date(),
-    };
+    const signalKey = `${analysis.tradeSignal.type}:${Math.round(analysis.tradeSignal.confidence)}`;
 
-    setTradeSignal(signal);
-  };
+    if (!lastSignalKeyRef.current) {
+      lastSignalKeyRef.current = signalKey;
+      return;
+    }
+
+    if (lastSignalKeyRef.current !== signalKey) {
+      if (analysis.tradeSignal.type === 'BUY') {
+        toast.success(`Compra confirmada em ${symbol}`, {
+          description: analysis.tradeSignal.reason[0],
+        });
+      } else if (analysis.tradeSignal.type === 'SELL') {
+        toast.error(`Venda confirmada em ${symbol}`, {
+          description: analysis.tradeSignal.reason[0],
+        });
+      } else if (analysis.tradeSignal.conditions.priceMovement) {
+        toast.info(`Movimento acima de 1% em ${symbol}`, {
+          description: 'Ainda sem alinhamento completo para compra ou venda.',
+        });
+      }
+    }
+
+    lastSignalKeyRef.current = signalKey;
+  }, [analysis, symbol]);
+
+  const priceChartData = useMemo(() => {
+    if (!analysis) {
+      return [];
+    }
+
+    return analysis.dailyBars.slice(-30).map((bar, index, bars) => {
+      const window = bars.slice(Math.max(0, index - 19), index + 1);
+      const sma20 =
+        window.reduce((sum, item) => sum + item.close, 0) / Math.max(window.length, 1);
+
+      return {
+        label: bar.label,
+        close: bar.close,
+        sma20: Number(sma20.toFixed(2)),
+      };
+    });
+  }, [analysis]);
+
+  const returnsChartData = useMemo(() => {
+    if (!analysis) {
+      return [];
+    }
+
+    return analysis.dailyBars.slice(-15).map(bar => ({
+      label: bar.label,
+      returnPercent: bar.returnPercent,
+    }));
+  }, [analysis]);
 
   const handleAddOperation = (operation: TradeOperation) => {
-    setOperations([...operations, operation]);
+    setOperations(previous => [...previous, operation]);
   };
 
   const handleDeleteOperation = (id: string) => {
-    setOperations(operations.filter(op => op.id !== id));
+    setOperations(previous => previous.filter(operation => operation.id !== id));
   };
 
-  const generateTaxDeclaration = () => {
+  const handleSendTelegramTest = async () => {
     try {
-      let declaration: TaxDeclaration;
-      if (selectedMonth) {
-        declaration = TaxCalculator.calculateMonthlyDeclaration(operations, selectedYear, selectedMonth);
-      } else {
-        declaration = TaxCalculator.calculateAnnualDeclaration(operations, selectedYear);
+      setSendingTelegramTest(true);
+
+      const response = await fetch('/api/mt5/telegram/test');
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Falha ao enviar teste para o Telegram.');
       }
-      setTaxDeclaration(declaration);
-    } catch (error) {
-      console.error('Erro ao gerar declaração:', error);
+
+      toast.success('Mensagem de teste enviada', {
+        description: payload?.message || 'Verifique o chat do bot no Telegram.',
+      });
+    } catch (err) {
+      toast.error('Falha no teste do Telegram', {
+        description: err instanceof Error ? err.message : 'Erro inesperado ao testar o envio.',
+      });
+    } finally {
+      setSendingTelegramTest(false);
     }
   };
 
-  useEffect(() => {
-    calculateRisk();
-  }, [accountSize, currentPrice, dayOpen, dayHigh, dayLow]);
+  const generateTaxDeclaration = () => {
+    const declaration = selectedMonth
+      ? TaxCalculator.calculateMonthlyDeclaration(operations, selectedYear, selectedMonth)
+      : TaxCalculator.calculateAnnualDeclaration(operations, selectedYear);
 
-  const dailyChange = RiskCalculator.calculateDailyChangePercent(currentPrice, dayOpen);
-  const isPositive = dailyChange > 0;
+    setTaxDeclaration(declaration);
+  };
+
+  const signalTone =
+    analysis?.tradeSignal.type === 'BUY'
+      ? 'border-chart-1/30 bg-chart-1/8'
+      : analysis?.tradeSignal.type === 'SELL'
+        ? 'border-chart-2/30 bg-chart-2/8'
+        : 'border-border bg-white/90';
+
+  const signalIcon =
+    analysis?.tradeSignal.type === 'BUY' ? (
+      <TrendingUp className="h-5 w-5 text-chart-1" />
+    ) : analysis?.tradeSignal.type === 'SELL' ? (
+      <TrendingDown className="h-5 w-5 text-chart-2" />
+    ) : (
+      <ShieldAlert className="h-5 w-5 text-muted-foreground" />
+    );
+
+  const currentPrice = analysis?.marketData.currentPrice ?? 0;
+  const currentChange = analysis?.marketData.changePercent ?? 0;
+  const currentSignal = analysis?.tradeSignal.type ?? 'WAIT';
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b border-border bg-white shadow-sm">
-        <div className="container mx-auto px-4 py-6">
-          <div className="flex items-center justify-between">
+    <div className="min-h-screen bg-[linear-gradient(180deg,#f7fafc_0%,#edf4ff_40%,#f7fafc_100%)]">
+      <header className="border-b border-border/70 bg-white/90 backdrop-blur">
+        <div className="container py-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <h1 className="text-3xl font-bold text-foreground">WIN Monitor</h1>
-              <p className="text-sm text-muted-foreground mt-1">Simulador de Risco - Mini Indice Brasileiro</p>
-            </div>
-            <div className="text-right">
-              <div className="text-2xl font-bold text-foreground">{currentPrice.toFixed(0)}</div>
-              <div className={`text-sm font-semibold ${isPositive ? 'text-chart-1' : 'text-chart-2'}`}>
-                {isPositive ? '+' : ''}{dailyChange.toFixed(2)}%
+              <div className="mb-2 flex items-center gap-2">
+                <Badge className="bg-primary/10 text-primary hover:bg-primary/10">
+                  <CandlestickChart className="mr-1 h-3.5 w-3.5" />
+                  Dashboard WIN
+                </Badge>
+                <Badge variant="outline">
+                  <BellRing className="mr-1 h-3.5 w-3.5" />
+                  Sinal com filtro de 1%
+                </Badge>
               </div>
+              <h1 className="text-3xl font-bold text-foreground">Decisao operacional do mini indice</h1>
+              <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+                O painel combina variacao da sessao, alinhamento de tendencia em 5m, 60m e diario,
+                retorno medio diario e contexto do MT5 para liberar compra, venda ou espera.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <Card className="border border-border/80 bg-white/90 px-4 py-3 shadow-sm">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Preco
+                </div>
+                <div className="mt-1 text-xl font-bold text-foreground">{formatPoints(currentPrice)}</div>
+              </Card>
+
+              <Card className="border border-border/80 bg-white/90 px-4 py-3 shadow-sm">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Dia
+                </div>
+                <div
+                  className={`mt-1 text-xl font-bold ${
+                    currentChange >= 0 ? 'text-chart-1' : 'text-chart-2'
+                  }`}
+                >
+                  {formatPercent(currentChange)}
+                </div>
+              </Card>
+
+              <Card className="border border-border/80 bg-white/90 px-4 py-3 shadow-sm">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Sinal
+                </div>
+                <div className="mt-1 text-xl font-bold text-foreground">{currentSignal}</div>
+              </Card>
+
+              <Card className="border border-border/80 bg-white/90 px-4 py-3 shadow-sm">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Atualizacao
+                </div>
+                <div className="mt-1 text-sm font-semibold text-foreground">{formatDateTime(lastRefreshAt)}</div>
+              </Card>
             </div>
           </div>
         </div>
       </header>
 
-      <main className="container mx-auto px-4 py-8">
-        <div className="mb-6 flex gap-2 border-b border-border">
-          <button
-            onClick={() => setActiveTab('simulator')}
-            className={`px-4 py-2 font-semibold border-b-2 ${
-              activeTab === 'simulator'
-                ? 'border-chart-1 text-chart-1'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Simulador
-          </button>
-          <button
-            onClick={() => setActiveTab('operations')}
-            className={`px-4 py-2 font-semibold border-b-2 ${
-              activeTab === 'operations'
-                ? 'border-chart-1 text-chart-1'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Operações
-          </button>
-          <button
-            onClick={() => setActiveTab('taxes')}
-            className={`px-4 py-2 font-semibold border-b-2 ${
-              activeTab === 'taxes'
-                ? 'border-chart-1 text-chart-1'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Impostos
-          </button>
+      <main className="container py-8">
+        <div className="mb-6 flex gap-2 border-b border-border/70">
+          {[
+            { key: 'simulator', label: 'Painel' },
+            { key: 'operations', label: 'Operacoes' },
+            { key: 'taxes', label: 'Impostos' },
+          ].map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key as 'simulator' | 'operations' | 'taxes')}
+              className={`px-4 py-2 border-b-2 font-semibold transition-colors ${
+                activeTab === tab.key
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
         {activeTab === 'simulator' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-1">
-              <Card className="p-6 border border-border">
-                <h2 className="text-lg font-bold text-foreground mb-6">Configuracoes</h2>
-
-                <div className="space-y-4">
+          <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
+            <div className="space-y-6">
+              <Card className="border border-border/70 bg-white/90 p-6 shadow-sm">
+                <div className="flex items-start justify-between">
                   <div>
-                    <Label className="text-sm font-medium text-foreground">Capital da Conta (R$)</Label>
+                    <h2 className="text-lg font-bold text-foreground">Controle</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Ajuste risco e recarregue o contexto de mercado.
+                    </p>
+                  </div>
+                  <Button
+                    onClick={refreshDashboard}
+                    disabled={loading}
+                    className="bg-primary text-primary-foreground hover:bg-primary/90"
+                  >
+                    <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                    Atualizar
+                  </Button>
+                </div>
+
+                <div className="mt-6 space-y-4">
+                  <div>
+                    <Label>Simbolo</Label>
+                    <Input
+                      value={symbol}
+                      onChange={event => setSymbol(event.target.value.toUpperCase())}
+                      className="mt-2"
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Capital da conta</Label>
                     <Input
                       type="number"
                       value={accountSize}
-                      onChange={(e) => setAccountSize(Number(e.target.value))}
+                      onChange={event => setAccountSize(Number(event.target.value))}
                       className="mt-2"
                     />
                   </div>
 
                   <div>
-                    <Label className="text-sm font-medium text-foreground">Preco Atual</Label>
+                    <Label>Risco por trade (%)</Label>
                     <Input
                       type="number"
-                      value={currentPrice}
-                      onChange={(e) => setCurrentPrice(Number(e.target.value))}
+                      min={0.1}
+                      step={0.1}
+                      value={riskPercentage}
+                      onChange={event => setRiskPercentage(Number(event.target.value))}
                       className="mt-2"
                     />
                   </div>
-
-                  <div>
-                    <Label className="text-sm font-medium text-foreground">Abertura do Dia</Label>
-                    <Input
-                      type="number"
-                      value={dayOpen}
-                      onChange={(e) => setDayOpen(Number(e.target.value))}
-                      className="mt-2"
-                    />
-                  </div>
-
-                  <div>
-                    <Label className="text-sm font-medium text-foreground">Maxima do Dia</Label>
-                    <Input
-                      type="number"
-                      value={dayHigh}
-                      onChange={(e) => setDayHigh(Number(e.target.value))}
-                      className="mt-2"
-                    />
-                  </div>
-
-                  <div>
-                    <Label className="text-sm font-medium text-foreground">Minima do Dia</Label>
-                    <Input
-                      type="number"
-                      value={dayLow}
-                      onChange={(e) => setDayLow(Number(e.target.value))}
-                      className="mt-2"
-                    />
-                  </div>
-
-                  <Button
-                    onClick={fetchMarketData}
-                    disabled={loading}
-                    className="w-full bg-chart-1 text-white hover:bg-chart-1/90"
-                  >
-                    <RefreshCw size={18} className={`mr-2 ${loading ? 'animate-spin' : ''}`} />
-                    {loading ? 'Carregando...' : 'Atualizar Dados'}
-                  </Button>
                 </div>
               </Card>
-            </div>
 
-            <div className="lg:col-span-2 space-y-6">
-              {tradeSignal && (
-                <Card
-                  className={`p-6 border-2 ${
-                    tradeSignal.type === 'BUY'
-                      ? 'border-chart-1 bg-chart-1 bg-opacity-5'
-                      : tradeSignal.type === 'SELL'
-                        ? 'border-chart-2 bg-chart-2 bg-opacity-5'
-                        : 'border-border'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-bold text-foreground">Sinal de Operacao</h3>
-                    <div
-                      className={`px-4 py-2 rounded font-bold text-white ${
-                        tradeSignal.type === 'BUY'
-                          ? 'bg-chart-1'
-                          : tradeSignal.type === 'SELL'
-                            ? 'bg-chart-2'
-                            : 'bg-muted'
-                      }`}
+              {analysis && (
+                <Card className={`border p-6 shadow-sm ${signalTone}`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="mb-2 flex items-center gap-2">
+                        {signalIcon}
+                        <span className="text-lg font-bold text-foreground">Sinal operacional</span>
+                      </div>
+                      <div className="text-3xl font-bold text-foreground">{analysis.tradeSignal.type}</div>
+                    </div>
+                    <Badge
+                      className={
+                        analysis.tradeSignal.type === 'BUY'
+                          ? 'bg-chart-1 text-white hover:bg-chart-1'
+                          : analysis.tradeSignal.type === 'SELL'
+                            ? 'bg-chart-2 text-white hover:bg-chart-2'
+                            : 'bg-muted text-foreground hover:bg-muted'
+                      }
                     >
-                      {tradeSignal.type === 'BUY' && <TrendingUp className="inline mr-2" size={18} />}
-                      {tradeSignal.type === 'SELL' && <TrendingDown className="inline mr-2" size={18} />}
-                      {tradeSignal.type}
-                    </div>
+                      {analysis.tradeSignal.confidence.toFixed(0)}% confianca
+                    </Badge>
                   </div>
-                  <div className="mb-4">
-                    <div className="text-sm text-muted-foreground mb-2">Confianca: {tradeSignal.confidence.toFixed(0)}%</div>
-                    <div className="w-full bg-border rounded-full h-2">
-                      <div
-                        className={`h-2 rounded-full ${
-                          tradeSignal.type === 'BUY' ? 'bg-chart-1' : 'bg-chart-2'
-                        }`}
-                        style={{ width: `${tradeSignal.confidence}%` }}
-                      />
-                    </div>
+
+                  <div className="mt-5 h-2 rounded-full bg-border">
+                    <div
+                      className={`h-2 rounded-full ${
+                        analysis.tradeSignal.type === 'BUY'
+                          ? 'bg-chart-1'
+                          : analysis.tradeSignal.type === 'SELL'
+                            ? 'bg-chart-2'
+                            : 'bg-chart-3'
+                      }`}
+                      style={{ width: `${analysis.tradeSignal.confidence}%` }}
+                    />
                   </div>
-                  <div className="space-y-2">
-                    {tradeSignal.reason.map((reason: string, idx: number) => (
-                      <div key={idx} className="text-sm text-foreground flex items-start">
-                        <span className="mr-2">•</span>
+
+                  <div className="mt-5 space-y-3">
+                    {analysis.tradeSignal.reason.map(reason => (
+                      <div key={reason} className="flex items-start gap-2 text-sm text-foreground">
+                        <Activity className="mt-0.5 h-4 w-4 text-primary" />
                         <span>{reason}</span>
                       </div>
                     ))}
@@ -290,51 +495,456 @@ export default function Home() {
                 </Card>
               )}
 
-              {riskCalculation && (
-                <Card className="p-6 border border-border">
-                  <h3 className="text-lg font-bold text-foreground mb-6">Gestao de Risco</h3>
+              <Card className="border border-border/70 bg-white/90 p-6 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-lg font-bold text-foreground">MT5 local</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Inspecao da instancia detectada na maquina.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      onClick={handleSendTelegramTest}
+                      disabled={sendingTelegramTest}
+                      className="bg-primary text-primary-foreground hover:bg-primary/90"
+                    >
+                      <BellRing className={`mr-2 h-4 w-4 ${sendingTelegramTest ? 'animate-pulse' : ''}`} />
+                      {sendingTelegramTest ? 'Enviando...' : 'Teste Telegram'}
+                    </Button>
+                    <Badge
+                      className={
+                        mt5Status?.terminalDetected
+                          ? 'bg-chart-1 text-white hover:bg-chart-1'
+                          : 'bg-muted text-foreground hover:bg-muted'
+                      }
+                    >
+                      <Wifi className="mr-1 h-3.5 w-3.5" />
+                      {mt5Status?.terminalDetected ? 'Detectado' : 'Sem leitura'}
+                    </Badge>
+                  </div>
+                </div>
 
-                  <div className="grid grid-cols-2 gap-4 mb-6">
-                    <div className="bg-secondary p-4 rounded">
-                      <div className="text-xs text-muted-foreground font-semibold mb-1">RISCO MAXIMO</div>
-                      <div className="text-xl font-bold text-foreground">
-                        R$ {riskCalculation.maxRiskAmount.toFixed(2)}
+                {mt5Status ? (
+                  <div className="mt-5 space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-xl border border-border/70 bg-secondary/50 p-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Conta
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-foreground">
+                          {mt5Status.accountId || '--'}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-secondary/50 p-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Servidor
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-foreground">
+                          {mt5Status.server || '--'}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-secondary/50 p-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Posicoes
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-foreground">
+                          {mt5Status.positions ?? '--'}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-secondary/50 p-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Ordens
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-foreground">
+                          {mt5Status.orders ?? '--'}
+                        </div>
                       </div>
                     </div>
 
-                    <div className="bg-secondary p-4 rounded">
-                      <div className="text-xs text-muted-foreground font-semibold mb-1">CONTRATOS PERMITIDOS</div>
-                      <div className="text-xl font-bold text-foreground">{riskCalculation.contractsAllowed}</div>
-                    </div>
-
-                    <div className="bg-secondary p-4 rounded">
-                      <div className="text-xs text-muted-foreground font-semibold mb-1">RAZAO RISCO/RECOMPENSA</div>
-                      <div className="text-xl font-bold text-foreground">
-                        1:{riskCalculation.riskRewardRatio.toFixed(2)}
+                    <div className="rounded-xl border border-border/70 bg-slate-950 p-4 text-slate-100">
+                      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                        <Database className="h-4 w-4" />
+                        Ultimo diario do terminal
+                      </div>
+                      <div className="space-y-2 text-[12px] leading-5">
+                        {mt5Status.recentLogEntries.slice(-5).map(line => (
+                          <div key={line} className="font-mono text-slate-200">
+                            {line}
+                          </div>
+                        ))}
                       </div>
                     </div>
 
-                    <div className="bg-secondary p-4 rounded">
-                      <div className="text-xs text-muted-foreground font-semibold mb-1">STOP LOSS POINTS</div>
-                      <div className="text-xl font-bold text-chart-2">{riskCalculation.stopLossPoints}</div>
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        O que o MT5 pode entregar para a analise
+                      </div>
+                      {mt5Status.relevantDataPoints.map(item => (
+                        <div key={item} className="flex items-start gap-2 text-sm text-foreground">
+                          <CheckCircle2 className="mt-0.5 h-4 w-4 text-chart-1" />
+                          <span>{item}</span>
+                        </div>
+                      ))}
                     </div>
+
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Arquivos exportados
+                      </div>
+                      {mt5Status.availableExports.length ? (
+                        mt5Status.availableExports.map(file => (
+                          <div
+                            key={file.path}
+                            className="rounded-lg border border-border/70 bg-secondary/50 p-3 text-sm"
+                          >
+                            <div className="font-semibold text-foreground">{file.name}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">{file.location}</div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
+                          Nenhum export estruturado foi encontrado em `MQL5\Files` ou `Common\Files`.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-4 text-sm text-muted-foreground">
+                    O status do terminal ainda nao foi carregado.
+                  </div>
+                )}
+              </Card>
+            </div>
+
+            <div className="space-y-6">
+              {error && (
+                <Alert variant="destructive" className="border border-chart-2/30 bg-chart-2/8">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Falha na atualizacao</AlertTitle>
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+
+              {analysis && (
+                <>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    <Card className="border border-border/70 bg-white/90 p-5 shadow-sm">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Retorno medio diario
+                      </div>
+                      <div className="mt-2 text-2xl font-bold text-foreground">
+                        {analysis.dailyProfile.avgDailyReturn.toFixed(2)}%
+                      </div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        Movimento tipico: {analysis.dailyProfile.typicalDailyMove.toFixed(2)}%
+                      </div>
+                    </Card>
+
+                    <Card className="border border-border/70 bg-white/90 p-5 shadow-sm">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        RSI
+                      </div>
+                      <div className="mt-2 text-2xl font-bold text-foreground">{analysis.rsi.toFixed(1)}</div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        Faixa favoravel: compra 55-78 | venda 22-45
+                      </div>
+                    </Card>
+
+                    <Card className="border border-border/70 bg-white/90 p-5 shadow-sm">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Volume recente
+                      </div>
+                      <div className="mt-2 text-2xl font-bold text-foreground">
+                        {analysis.volumeRatio.toFixed(2)}x
+                      </div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        Em relacao a media intradiaria recente
+                      </div>
+                    </Card>
+
+                    <Card className="border border-border/70 bg-white/90 p-5 shadow-sm">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Faixa do dia
+                      </div>
+                      <div className="mt-2 text-2xl font-bold text-foreground">
+                        {(analysis.rangePosition * 100).toFixed(0)}%
+                      </div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        Posicao do preco entre minima e maxima da sessao
+                      </div>
+                    </Card>
                   </div>
 
-                  <div className="space-y-3 border-t border-border pt-4">
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">Preco de Entrada</span>
-                      <span className="font-semibold text-foreground">{riskCalculation.entryPrice.toFixed(2)}</span>
+                  <Card className="border border-border/70 bg-white/90 p-6 shadow-sm">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h2 className="text-lg font-bold text-foreground">Alinhamento de tendencia</h2>
+                        <p className="text-sm text-muted-foreground">
+                          O sinal so libera compra ou venda quando os tres tempos ficam coerentes.
+                        </p>
+                      </div>
+                      <Badge variant="outline">
+                        Bias atual:{' '}
+                        {analysis.bias === 'bullish'
+                          ? 'comprador'
+                          : analysis.bias === 'bearish'
+                            ? 'vendedor'
+                            : 'neutro'}
+                      </Badge>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">Stop Loss</span>
-                      <span className="font-semibold text-chart-2">{riskCalculation.stopLossPrice.toFixed(2)}</span>
+
+                    <div className="mt-5 grid gap-4 lg:grid-cols-3">
+                      {analysis.trendAnalysis.map(trend => (
+                        <div
+                          key={trend.timeframe}
+                          className={`rounded-2xl border p-5 ${getTrendClasses(trend.trend)}`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm font-semibold">{trend.timeframe}</div>
+                            <Badge variant="outline" className="border-current text-current">
+                              {getTrendLabel(trend.trend)}
+                            </Badge>
+                          </div>
+                          <div className="mt-4 text-3xl font-bold">{trend.strength.toFixed(0)}</div>
+                          <div className="mt-1 text-xs uppercase tracking-wide">forca</div>
+                          <div className="mt-4 space-y-2 text-sm">
+                            <div className="flex justify-between gap-4">
+                              <span>Slope</span>
+                              <span className="font-semibold">{trend.slopePercent.toFixed(2)}%</span>
+                            </div>
+                            <div className="flex justify-between gap-4">
+                              <span>SMA 9 / 21</span>
+                              <span className="font-semibold">
+                                {formatPoints(trend.sma9)} / {formatPoints(trend.sma21)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between gap-4">
+                              <span>Suporte / resistencia</span>
+                              <span className="font-semibold">
+                                {formatPoints(trend.support)} / {formatPoints(trend.resistance)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">Take Profit</span>
-                      <span className="font-semibold text-chart-1">{riskCalculation.takeProfitPrice.toFixed(2)}</span>
-                    </div>
+                  </Card>
+
+                  <div className="grid gap-6 2xl:grid-cols-2">
+                    <Card className="border border-border/70 bg-white/90 p-6 shadow-sm">
+                      <div className="mb-4 flex items-center gap-2">
+                        <ChartColumnBig className="h-5 w-5 text-primary" />
+                        <div>
+                          <h2 className="text-lg font-bold text-foreground">Historico de fechamento</h2>
+                          <p className="text-sm text-muted-foreground">
+                            Ultimos 30 candles diarios com media movel de 20 periodos.
+                          </p>
+                        </div>
+                      </div>
+
+                      <ChartContainer config={priceChartConfig} className="h-[300px] w-full">
+                        <RechartsLineChart data={priceChartData}>
+                          <CartesianGrid vertical={false} />
+                          <XAxis dataKey="label" tickLine={false} axisLine={false} />
+                          <YAxis tickLine={false} axisLine={false} domain={['auto', 'auto']} />
+                          <ChartTooltip content={<ChartTooltipContent />} />
+                          <Line
+                            type="monotone"
+                            dataKey="close"
+                            stroke="var(--color-close)"
+                            strokeWidth={2.5}
+                            dot={false}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="sma20"
+                            stroke="var(--color-sma20)"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                        </RechartsLineChart>
+                      </ChartContainer>
+                    </Card>
+
+                    <Card className="border border-border/70 bg-white/90 p-6 shadow-sm">
+                      <div className="mb-4 flex items-center gap-2">
+                        <Activity className="h-5 w-5 text-primary" />
+                        <div>
+                          <h2 className="text-lg font-bold text-foreground">Retorno padrao dos dias</h2>
+                          <p className="text-sm text-muted-foreground">
+                            Ultimos 15 retornos diarios para comparar a sessao atual com o comportamento normal.
+                          </p>
+                        </div>
+                      </div>
+
+                      <ChartContainer config={returnsChartConfig} className="h-[300px] w-full">
+                        <RechartsBarChart data={returnsChartData}>
+                          <CartesianGrid vertical={false} />
+                          <XAxis dataKey="label" tickLine={false} axisLine={false} />
+                          <YAxis tickLine={false} axisLine={false} />
+                          <ReferenceLine y={0} stroke="var(--color-border)" />
+                          <ChartTooltip content={<ChartTooltipContent />} />
+                          <Bar dataKey="returnPercent" radius={[6, 6, 0, 0]}>
+                            {returnsChartData.map(item => (
+                              <Cell
+                                key={`${item.label}-${item.returnPercent}`}
+                                fill={
+                                  item.returnPercent >= 0
+                                    ? 'var(--color-chart-1)'
+                                    : 'var(--color-chart-2)'
+                                }
+                              />
+                            ))}
+                          </Bar>
+                        </RechartsBarChart>
+                      </ChartContainer>
+                    </Card>
                   </div>
-                </Card>
+
+                  <div className="grid gap-6 2xl:grid-cols-[1.3fr_minmax(0,1fr)]">
+                    <Card className="border border-border/70 bg-white/90 p-6 shadow-sm">
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="h-5 w-5 text-primary" />
+                        <div>
+                          <h2 className="text-lg font-bold text-foreground">Plano operacional</h2>
+                          <p className="text-sm text-muted-foreground">
+                            Niveis operacionais derivados do contexto atual e do risco da conta.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                        <div className="rounded-xl border border-border/70 bg-secondary/50 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Direcao
+                          </div>
+                          <div className="mt-2 text-xl font-bold text-foreground">
+                            {analysis.tradeSetup.direction}
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-border/70 bg-secondary/50 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Stop
+                          </div>
+                          <div className="mt-2 text-xl font-bold text-chart-2">
+                            {analysis.tradeSetup.stopPoints} pts
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-border/70 bg-secondary/50 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Alvo
+                          </div>
+                          <div className="mt-2 text-xl font-bold text-chart-1">
+                            {analysis.tradeSetup.targetPoints} pts
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-border/70 bg-secondary/50 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Contratos
+                          </div>
+                          <div className="mt-2 text-xl font-bold text-foreground">
+                            {analysis.tradeSetup.contractsAllowed}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 space-y-3 border-t border-border/70 pt-5">
+                        {[
+                          ['Entrada', formatPoints(analysis.tradeSetup.entryPrice)],
+                          ['Stop price', formatPoints(analysis.tradeSetup.stopPrice)],
+                          ['Target price', formatPoints(analysis.tradeSetup.targetPrice)],
+                          ['Risco maximo', formatCurrency(analysis.tradeSetup.maxRiskAmount)],
+                          [
+                            'Razao risco/recompensa',
+                            analysis.tradeSetup.riskRewardRatio
+                              ? `1:${analysis.tradeSetup.riskRewardRatio.toFixed(2)}`
+                              : '--',
+                          ],
+                          [
+                            'Suporte / resistencia',
+                            `${formatPoints(analysis.support)} / ${formatPoints(analysis.resistance)}`,
+                          ],
+                        ].map(([label, value]) => (
+                          <div key={label} className="flex items-center justify-between gap-4 text-sm">
+                            <span className="text-muted-foreground">{label}</span>
+                            <span className="font-semibold text-foreground">{value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+
+                    <Card className="border border-border/70 bg-white/90 p-6 shadow-sm">
+                      <div className="flex items-center gap-2">
+                        <Database className="h-5 w-5 text-primary" />
+                        <div>
+                          <h2 className="text-lg font-bold text-foreground">Checklist do gatilho</h2>
+                          <p className="text-sm text-muted-foreground">
+                            Todos os filtros abaixo precisam cooperar para liberar sinal.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 space-y-3">
+                        {[
+                          {
+                            label: 'Mudanca acima de 1%',
+                            status: analysis.tradeSignal.conditions.priceMovement,
+                          },
+                          {
+                            label: 'Breakout confirmado',
+                            status: analysis.tradeSignal.conditions.breakoutConfirmed,
+                          },
+                          {
+                            label: 'Volume acima da media',
+                            status: analysis.tradeSignal.conditions.volumeAboveAverage,
+                          },
+                          {
+                            label: 'Tendencias alinhadas',
+                            status: analysis.tradeSignal.conditions.alignmentMultiframe,
+                          },
+                          {
+                            label: 'Tecnico favoravel',
+                            status: analysis.tradeSignal.conditions.technicalAlignment,
+                          },
+                        ].map(({ label, status }) => (
+                          <div
+                            key={label}
+                            className="flex items-center justify-between rounded-xl border border-border/70 bg-secondary/40 px-4 py-3"
+                          >
+                            <div className="text-sm font-medium text-foreground">{label}</div>
+                            <div className="flex items-center gap-2 text-sm font-semibold">
+                              {status ? (
+                                <>
+                                  <CheckCircle2 className="h-4 w-4 text-chart-1" />
+                                  <span className="text-chart-1">OK</span>
+                                </>
+                              ) : (
+                                <>
+                                  <XCircle className="h-4 w-4 text-chart-2" />
+                                  <span className="text-chart-2">Falta</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+                  </div>
+
+                  {mt5Status?.notes?.length ? (
+                    <Alert className="border border-primary/20 bg-primary/5">
+                      <Wifi className="h-4 w-4 text-primary" />
+                      <AlertTitle>Leitura atual do MT5</AlertTitle>
+                      <AlertDescription>
+                        {mt5Status.notes.map(note => (
+                          <p key={note}>{note}</p>
+                        ))}
+                      </AlertDescription>
+                    </Alert>
+                  ) : null}
+                </>
               )}
             </div>
           </div>
@@ -350,31 +960,33 @@ export default function Home() {
 
         {activeTab === 'taxes' && (
           <div className="space-y-6">
-            <Card className="p-6 border border-border">
-              <h3 className="text-lg font-bold text-foreground mb-4">Gerar Declaracao de Impostos</h3>
+            <Card className="border border-border/70 bg-white/90 p-6 shadow-sm">
+              <h3 className="text-lg font-bold text-foreground">Gerar declaracao de impostos</h3>
 
-              <div className="grid grid-cols-2 gap-4 mb-4">
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <div>
-                  <Label className="text-sm font-medium text-foreground">Ano</Label>
+                  <Label>Ano</Label>
                   <Input
                     type="number"
                     value={selectedYear}
-                    onChange={(e) => setSelectedYear(Number(e.target.value))}
+                    onChange={event => setSelectedYear(Number(event.target.value))}
                     className="mt-2"
                   />
                 </div>
 
                 <div>
-                  <Label className="text-sm font-medium text-foreground">Mês (opcional)</Label>
+                  <Label>Mes (opcional)</Label>
                   <select
                     value={selectedMonth || ''}
-                    onChange={(e) => setSelectedMonth(e.target.value ? Number(e.target.value) : undefined)}
-                    className="w-full mt-2 px-3 py-2 border border-border rounded bg-background text-foreground"
+                    onChange={event =>
+                      setSelectedMonth(event.target.value ? Number(event.target.value) : undefined)
+                    }
+                    className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
                   >
                     <option value="">Anual</option>
                     <option value="1">Janeiro</option>
                     <option value="2">Fevereiro</option>
-                    <option value="3">Março</option>
+                    <option value="3">Marco</option>
                     <option value="4">Abril</option>
                     <option value="5">Maio</option>
                     <option value="6">Junho</option>
@@ -390,9 +1002,9 @@ export default function Home() {
 
               <Button
                 onClick={generateTaxDeclaration}
-                className="w-full bg-chart-1 text-white hover:bg-chart-1/90"
+                className="mt-4 w-full bg-primary text-primary-foreground hover:bg-primary/90"
               >
-                Gerar Declaracao
+                Gerar declaracao
               </Button>
             </Card>
 

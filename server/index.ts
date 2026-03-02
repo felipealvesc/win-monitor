@@ -5,6 +5,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import marketDataRouter from "./routes/marketData";
+import mt5Router from "./routes/mt5";
+import { TelegramSignalMonitor } from "./services/telegramSignalMonitor";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,6 +54,7 @@ loadEnvFile();
 async function startServer() {
   const app = express();
   const server = createServer(app);
+  const telegramSignalMonitor = new TelegramSignalMonitor();
 
   // Serve static files from dist/public in production
   const staticPath =
@@ -61,6 +64,7 @@ async function startServer() {
 
   // API Routes - DEVE VIR ANTES DE STATIC FILES
   app.use('/api/market', marketDataRouter as any);
+  app.use('/api/mt5', mt5Router as any);
 
   // Serve static files from dist/public in production
   app.use(express.static(staticPath));
@@ -74,6 +78,11 @@ async function startServer() {
 
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
+    telegramSignalMonitor.start();
+  });
+
+  server.on('close', () => {
+    telegramSignalMonitor.stop();
   });
 }
 

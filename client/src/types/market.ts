@@ -11,6 +11,17 @@ export interface MarketData {
   changePoints: number;
 }
 
+export interface HistoricalBar {
+  timestamp: Date;
+  label: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  returnPercent: number;
+}
+
 export interface TechnicalIndicators {
   vwap: number;
   sma20: number;
@@ -28,6 +39,15 @@ export interface TrendAnalysis {
   strength: number;
   support: number;
   resistance: number;
+}
+
+export interface TimeframeTrend extends TrendAnalysis {
+  price: number;
+  sma9: number;
+  sma21: number;
+  sma50: number;
+  slopePercent: number;
+  momentumPercent: number;
 }
 
 export interface RiskCalculation {
@@ -57,6 +77,49 @@ export interface TradeSignal {
   timestamp: Date;
 }
 
+export interface DailyReturnProfile {
+  avgDailyReturn: number;
+  avgPositiveReturn: number;
+  avgNegativeReturn: number;
+  avgDailyRange: number;
+  typicalDailyMove: number;
+  volatility: number;
+  positiveCloseRate: number;
+  last20AverageVolume: number;
+}
+
+export interface TradeSetup {
+  direction: 'BUY' | 'SELL' | 'WAIT';
+  entryPrice: number;
+  stopPrice: number;
+  targetPrice: number;
+  stopPoints: number;
+  targetPoints: number;
+  riskRewardRatio: number;
+  maxRiskAmount: number;
+  contractsAllowed: number;
+  riskPercentage: number;
+  support: number;
+  resistance: number;
+}
+
+export interface MarketAnalysis {
+  marketData: MarketData;
+  intradayBars: HistoricalBar[];
+  hourlyBars: HistoricalBar[];
+  dailyBars: HistoricalBar[];
+  trendAnalysis: TimeframeTrend[];
+  dailyProfile: DailyReturnProfile;
+  tradeSignal: TradeSignal;
+  tradeSetup: TradeSetup;
+  bias: 'bullish' | 'bearish' | 'neutral';
+  support: number;
+  resistance: number;
+  rangePosition: number;
+  volumeRatio: number;
+  rsi: number;
+}
+
 export interface PortfolioMetrics {
   totalCapital: number;
   usedCapital: number;
@@ -83,4 +146,32 @@ export interface SimulationResult {
   tradeSignal: TradeSignal;
   riskCalculation: RiskCalculation;
   portfolioMetrics: PortfolioMetrics;
+}
+
+export interface Mt5ExportFile {
+  name: string;
+  path: string;
+  size: number;
+  lastModified: string;
+  location: 'terminal' | 'common';
+}
+
+export interface Mt5Status {
+  terminalDetected: boolean;
+  installPath: string | null;
+  dataPath: string | null;
+  latestLogFile: string | null;
+  build: string | null;
+  broker: string | null;
+  accountId: string | null;
+  server: string | null;
+  positions: number | null;
+  orders: number | null;
+  symbols: number | null;
+  spreads: number | null;
+  accountMode: 'netting' | 'hedging' | 'unknown';
+  availableExports: Mt5ExportFile[];
+  relevantDataPoints: string[];
+  notes: string[];
+  recentLogEntries: string[];
 }

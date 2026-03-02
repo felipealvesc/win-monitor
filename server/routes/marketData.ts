@@ -1,107 +1,101 @@
-import { Router, Request, Response } from 'express';
-import { YahooFinanceService, MarketDataResponse } from '../services/yahooFinanceService';
+import { Request, Response, Router } from 'express';
+import { Mt5MarketDataService } from '../services/mt5MarketDataService';
 
 const router = Router();
 
-/**
- * GET /api/market/quote/:symbol
- * Busca dados de um símbolo específico
- */
 router.get('/quote/:symbol', async (req: Request, res: Response) => {
   try {
     const { symbol } = req.params;
 
     if (!symbol) {
-      return res.status(400).json({ error: 'Symbol é obrigatório' });
+      return res.status(400).json({ error: 'Symbol e obrigatorio' });
     }
 
-    const data = await YahooFinanceService.fetchQuote(symbol);
+    const data = await Mt5MarketDataService.fetchQuote(symbol);
 
     if (!data) {
-      return res.status(404).json({ error: `Dados não encontrados para ${symbol}` });
+      return res.status(404).json({ error: `Dados nao encontrados no MT5 para ${symbol}` });
     }
 
-    res.json(data);
+    return res.json(data);
   } catch (error) {
-    console.error('Erro ao buscar quote:', error);
-    res.status(500).json({ error: 'Erro ao buscar dados do mercado' });
+    console.error('Erro ao buscar quote MT5:', error);
+    return res.status(500).json({ error: 'Erro ao buscar dados do mercado no MT5' });
   }
 });
 
-/**
- * GET /api/market/quotes
- * Busca dados de múltiplos símbolos
- * Query: symbols=WINJ26,IBOV,BVSP
- */
 router.get('/quotes', async (req: Request, res: Response) => {
   try {
     const { symbols } = req.query;
 
     if (!symbols || typeof symbols !== 'string') {
-      return res.status(400).json({ error: 'Query parameter "symbols" é obrigatório (ex: ?symbols=WINJ26,IBOV)' });
+      return res
+        .status(400)
+        .json({ error: 'Query parameter "symbols" e obrigatorio (ex: ?symbols=WINJ26,WINM26)' });
     }
 
-    const symbolList = symbols.split(',').map(s => s.trim());
-    const data = await YahooFinanceService.fetchMultipleQuotes(symbolList);
+    const symbolList = symbols
+      .split(',')
+      .map(item => item.trim().toUpperCase())
+      .filter(Boolean);
 
-    res.json(data);
+    const data = await Mt5MarketDataService.fetchMultipleQuotes(symbolList);
+    return res.json(data);
   } catch (error) {
-    console.error('Erro ao buscar múltiplos quotes:', error);
-    res.status(500).json({ error: 'Erro ao buscar dados do mercado' });
+    console.error('Erro ao buscar multiplos quotes MT5:', error);
+    return res.status(500).json({ error: 'Erro ao buscar multiplos dados no MT5' });
   }
 });
 
-/**
- * GET /api/market/historical/:symbol
- * Busca dados históricos de um símbolo
- * Query: interval=1d&range=1mo
- */
 router.get('/historical/:symbol', async (req: Request, res: Response) => {
   try {
     const { symbol } = req.params;
     const { interval = '1d', range = '1mo' } = req.query;
 
     if (!symbol) {
-      return res.status(400).json({ error: 'Symbol é obrigatório' });
+      return res.status(400).json({ error: 'Symbol e obrigatorio' });
     }
 
-    const data = await YahooFinanceService.fetchHistoricalData(
+    const data = await Mt5MarketDataService.fetchHistoricalData(
       symbol,
       (interval as any) || '1d',
       (range as any) || '1mo'
     );
 
     if (!data) {
-      return res.status(404).json({ error: `Dados históricos não encontrados para ${symbol}` });
+      return res.status(404).json({ error: `Historico nao encontrado no MT5 para ${symbol}` });
     }
 
-    res.json(data);
+    return res.json(data);
   } catch (error) {
-    console.error('Erro ao buscar dados históricos:', error);
-    res.status(500).json({ error: 'Erro ao buscar dados históricos' });
+    console.error('Erro ao buscar historico MT5:', error);
+    return res.status(500).json({ error: 'Erro ao buscar historico no MT5' });
   }
 });
 
-/**
- * GET /api/market/symbols
- * Retorna lista de símbolos disponíveis
- */
-router.get('/symbols', (req: Request, res: Response) => {
+router.get('/symbols', async (_req: Request, res: Response) => {
   try {
-    const symbols = YahooFinanceService.getAvailableSymbols();
-    res.json({ symbols });
+    const symbols = await Mt5MarketDataService.getAvailableSymbols();
+    return res.json({ symbols });
   } catch (error) {
-    console.error('Erro ao buscar símbolos:', error);
-    res.status(500).json({ error: 'Erro ao buscar símbolos disponíveis' });
+    console.error('Erro ao listar simbolos MT5:', error);
+    return res.status(500).json({ error: 'Erro ao buscar simbolos do MT5' });
   }
 });
 
-/**
- * GET /api/market/health
- * Verifica saúde do serviço
- */
-router.get('/health', (req: Request, res: Response) => {
-  res.json({ status: 'ok', service: 'market-data' });
+router.get('/health', async (_req: Request, res: Response) => {
+  try {
+    const symbols = await Mt5MarketDataService.getAvailableSymbols();
+
+    return res.json({
+      status: 'ok',
+      service: 'market-data-mt5',
+      symbolsAvailable: symbols.length,
+    });
+  } catch (error) {
+    console.error('Erro no health MT5:', error);
+    return res.status(500).json({ status: 'error', service: 'market-data-mt5' });
+  }
 });
 
 export default router;
