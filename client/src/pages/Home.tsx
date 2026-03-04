@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,6 +13,7 @@ import OperationsForm from '@/components/OperationsForm';
 import TaxDeclarationReport from '@/components/TaxDeclarationReport';
 
 export default function Home() {
+  const MIN_REVERSAL_POINTS = 4000;
   const [accountSize, setAccountSize] = useState(10000);
   const [currentPrice, setCurrentPrice] = useState(125000);
   const [dayOpen, setDayOpen] = useState(124000);
@@ -26,6 +27,7 @@ export default function Home() {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState<number | undefined>(undefined);
   const [activeTab, setActiveTab] = useState<'simulator' | 'operations' | 'taxes'>('simulator');
+  const previousPriceRef = useRef(currentPrice);
 
   const fetchMarketData = async () => {
     setLoading(true);
@@ -45,8 +47,18 @@ export default function Home() {
   };
 
   const calculateRisk = () => {
+    const previousPrice = previousPriceRef.current;
     const dailyChange = RiskCalculator.calculateDailyChangePercent(currentPrice, dayOpen);
-    const hasOnePercent = RiskCalculator.checkOnePercentThreshold(currentPrice, dayOpen);
+    const openToLowPoints = dayOpen - dayLow;
+    const openToHighPoints = dayHigh - dayOpen;
+    const isRising = currentPrice > previousPrice;
+    const isFalling = currentPrice < previousPrice;
+
+    const hasStrongDropFromOpen = openToLowPoints >= MIN_REVERSAL_POINTS;
+    const hasStrongRiseFromOpen = openToHighPoints >= MIN_REVERSAL_POINTS;
+
+    const buyReversalSignal = hasStrongDropFromOpen && isRising;
+    const sellReversalSignal = hasStrongRiseFromOpen && isFalling && currentPrice > dayOpen;
 
     const stopLevels = RiskCalculator.calculateStopLevels(
       currentPrice,
@@ -68,18 +80,25 @@ export default function Home() {
 
     const signal: TradeSignal = {
       // Regra operacional solicitada:
-      // - Pico/variação positiva acima de 1% => sinal de VENDA
-      // - Pico/variação negativa acima de 1% => sinal de COMPRA
-      type: hasOnePercent ? (dailyChange > 0 ? 'SELL' : 'BUY') : 'WAIT',
-      confidence: Math.min(100, Math.abs(dailyChange) * 50),
+      // - Se abriu e foi ao fundo >= 4.000 pontos, começou a subir => COMPRA
+      // - Se abriu e foi ao topo >= 4.000 pontos, começou a cair para voltar da abertura => VENDA
+      type: buyReversalSignal ? 'BUY' : sellReversalSignal ? 'SELL' : 'WAIT',
+      confidence: Math.min(
+        100,
+        Math.max(openToLowPoints, openToHighPoints) / MIN_REVERSAL_POINTS * 100
+      ),
       reason: [
         `Variacao diaria: ${dailyChange.toFixed(2)}%`,
+        `Abertura -> Fundo: ${openToLowPoints.toFixed(0)} pts`,
+        `Abertura -> Topo: ${openToHighPoints.toFixed(0)} pts`,
+        `Direcao atual: ${isRising ? 'subindo' : isFalling ? 'descendo' : 'lateral'}`,
         `Razao risco/recompensa: ${risk.riskRewardRatio}`,
         `Contratos permitidos: ${risk.contractsAllowed}`,
       ],
       conditions: {
-        priceMovement: hasOnePercent,
-        breakoutConfirmed: Math.abs(dailyChange) > 1.5,
+        priceMovement: buyReversalSignal || sellReversalSignal,
+        breakoutConfirmed:
+          openToLowPoints >= MIN_REVERSAL_POINTS || openToHighPoints >= MIN_REVERSAL_POINTS,
         volumeAboveAverage: true,
         alignmentMultiframe: true,
         technicalAlignment: true,
@@ -88,6 +107,7 @@ export default function Home() {
     };
 
     setTradeSignal(signal);
+    previousPriceRef.current = currentPrice;
   };
 
   const handleAddOperation = (operation: TradeOperation) => {
