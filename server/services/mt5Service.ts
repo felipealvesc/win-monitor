@@ -14,6 +14,8 @@ export interface Mt5StatusResponse {
   terminalDetected: boolean;
   installPath: string | null;
   dataPath: string | null;
+  terminalFilesPath: string | null;
+  commonFilesPath: string | null;
   latestLogFile: string | null;
   build: string | null;
   broker: string | null;
@@ -87,16 +89,60 @@ const getLatestLogFile = (dataPath: string | null): string | null => {
   return logFiles[0] || null;
 };
 
+const decodeLogContent = (buffer: Buffer) => {
+  if (buffer.length >= 2) {
+    const hasUtf16LeBom = buffer[0] === 0xff && buffer[1] === 0xfe;
+    const hasUtf16BeBom = buffer[0] === 0xfe && buffer[1] === 0xff;
+
+    if (hasUtf16LeBom) {
+      return buffer.toString('utf16le');
+    }
+
+    if (hasUtf16BeBom) {
+      return buffer.swap16().toString('utf16le');
+    }
+  }
+
+  let zeroBytes = 0;
+  for (let index = 1; index < Math.min(buffer.length, 4000); index += 2) {
+    if (buffer[index] === 0) {
+      zeroBytes += 1;
+    }
+  }
+
+  if (zeroBytes > 20) {
+    return buffer.toString('utf16le');
+  }
+
+  return buffer.toString('utf-8');
+};
+
+// some log entries are just noise from MetaTrader (live updates, market errors, chat activations)
+// and only clutter the UI. ignore common patterns so the dashboard remains useful.
+const isIgnorableLogLine = (line: string) => {
+  const patterns: RegExp[] = [
+    /MQL5 Market failed to get list of user products/i,
+    /LiveUpdate.*failed/i,
+    /LiveUpdate new version build/i,
+    /MQL5\.chats activated/i,
+    /MTSCLW64/i,
+    /MT5CLW64/i,
+  ];
+  return patterns.some(p => p.test(line));
+};
+
 const readRecentLogLines = (logFilePath: string | null) => {
   if (!logFilePath || !fs.existsSync(logFilePath)) {
     return [];
   }
 
-  const content = fs.readFileSync(logFilePath, 'utf-8');
+  const fileBuffer = fs.readFileSync(logFilePath);
+  const content = decodeLogContent(fileBuffer);
   const lines = content
     .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean);
+    .map(line => line.replace(/\u0000/g, '').replace(/\t+/g, ' | ').trim())
+    .filter(Boolean)
+    .filter(line => !isIgnorableLogLine(line));
 
   const head = lines.slice(0, 20);
   const tail = lines.slice(-20);
@@ -199,7 +245,10 @@ const parseLog = (logLines: string[]) => {
 
 export class Mt5Service {
   static getStatus(): Mt5StatusResponse {
-    const installPath = 'C:\Program Files\MetaTrader 5 Terminal';
+    // allow user to specify a custom installation path if MT5 is installed
+    // somewhere other than the default location (useful for portable installs).
+    const installPath =
+      process.env.MT5_INSTALL_PATH || 'C:\Program Files\MetaTrader 5 Terminal';
     const terminalRoot = getTerminalRoot();
     const detectedInstallPath = fs.existsSync(installPath) ? installPath : null;
     const dataPath = getLatestDataPath(terminalRoot);
@@ -208,12 +257,14 @@ export class Mt5Service {
     const parsed = parseLog(recentLogEntries);
 
     const effectiveDataPath = parsed.dataPath || dataPath;
+    const terminalFilesPath = effectiveDataPath ? path.join(effectiveDataPath, 'MQL5', 'Files') : null;
+    const commonFilesPath = path.join(terminalRoot, 'Common', 'Files');
     const terminalExports = collectStructuredExports(
-      effectiveDataPath ? path.join(effectiveDataPath, 'MQL5', 'Files') : '',
+      terminalFilesPath || '',
       'terminal'
     );
     const commonExports = collectStructuredExports(
-      path.join(terminalRoot, 'Common', 'Files'),
+      commonFilesPath,
       'common'
     );
 
@@ -226,7 +277,14 @@ export class Mt5Service {
     const notes: string[] = [];
 
     if (!detectedInstallPath) {
-      notes.push('Instalação do MetaTrader 5 não foi encontrada no caminho padrão.');
+      const attempted = installPath;
+      if (process.env.MT5_INSTALL_PATH) {
+        notes.push(
+          `Instalação do MetaTrader 5 não foi encontrada no caminho configurado (${attempted}).`);
+      } else {
+        notes.push(
+          `Instalação do MetaTrader 5 não foi encontrada no caminho padrão (${attempted}).`);
+      }
     }
 
     if (!effectiveDataPath) {
@@ -251,6 +309,8 @@ export class Mt5Service {
       terminalDetected: Boolean(detectedInstallPath && effectiveDataPath && latestLogFile),
       installPath: detectedInstallPath,
       dataPath: effectiveDataPath,
+      terminalFilesPath,
+      commonFilesPath,
       latestLogFile,
       build: parsed.build,
       broker: parsed.broker,

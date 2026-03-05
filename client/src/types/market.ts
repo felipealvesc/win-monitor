@@ -160,6 +160,8 @@ export interface Mt5Status {
   terminalDetected: boolean;
   installPath: string | null;
   dataPath: string | null;
+  terminalFilesPath: string | null;
+  commonFilesPath: string | null;
   latestLogFile: string | null;
   build: string | null;
   broker: string | null;

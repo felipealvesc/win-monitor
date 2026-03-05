@@ -131,6 +131,7 @@ export default function Home() {
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
   const [operations, setOperations] = useState<TradeOperation[]>([]);
   const [taxDeclaration, setTaxDeclaration] = useState<TaxDeclaration | null>(null);
+  const [editingOperation, setEditingOperation] = useState<TradeOperation | null>(null);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState<number | undefined>(undefined);
   const [activeTab, setActiveTab] = useState<'simulator' | 'operations' | 'taxes'>('simulator');
@@ -251,12 +252,97 @@ export default function Home() {
     }));
   }, [analysis]);
 
-  const handleAddOperation = (operation: TradeOperation) => {
-    setOperations(previous => [...previous, operation]);
+  // fetch persisted operations once when the component mounts
+  // helper to keep the list sorted by entry date descending
+  const sortOps = (list: TradeOperation[]) =>
+    list.slice().sort((a, b) => b.entryDate.getTime() - a.entryDate.getTime());
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const res = await fetch('/api/operations');
+        if (!res.ok) throw new Error('Não foi possível carregar operações');
+        const data: TradeOperation[] = await res.json();
+        const parsed = data.map(op => ({
+          ...op,
+          entryDate: new Date(op.entryDate as unknown as string),
+          exitDate: op.exitDate ? new Date(op.exitDate as unknown as string) : undefined,
+        }));
+        setOperations(sortOps(parsed));
+      } catch (err) {
+        console.error(err);
+        toast.error('Falha ao carregar operações');
+      }
+    };
+
+    load();
+  }, []);
+
+  const handleAddOperation = async (operation: TradeOperation) => {
+    try {
+      const res = await fetch('/api/operations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(operation),
+      });
+      if (!res.ok) {
+        const payload = await res.json();
+        throw new Error(payload?.error || 'Erro ao salvar operação');
+      }
+      const saved: TradeOperation = await res.json();
+      setOperations(previous => sortOps([...previous, saved]));
+    } catch (err) {
+      toast.error('Erro ao salvar operação', {
+        description: err instanceof Error ? err.message : 'Erro desconhecido',
+      });
+    }
   };
 
-  const handleDeleteOperation = (id: string) => {
-    setOperations(previous => previous.filter(operation => operation.id !== id));
+  const handleDeleteOperation = async (id: string) => {
+    try {
+      const res = await fetch(`/api/operations/${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const payload = await res.json();
+        throw new Error(payload?.error || 'Erro ao deletar operação');
+      }
+      setOperations(previous => previous.filter(operation => operation.id !== id));
+      if (editingOperation?.id === id) {
+        setEditingOperation(null);
+      }
+    } catch (err) {
+      toast.error('Erro ao deletar operação', {
+        description: err instanceof Error ? err.message : 'Erro desconhecido',
+      });
+    }
+  };
+
+  const handleEditOperation = (op: TradeOperation) => {
+    setEditingOperation(op);
+  };
+
+  const handleUpdateOperation = async (operation: TradeOperation) => {
+    try {
+      const res = await fetch(`/api/operations/${operation.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(operation),
+      });
+      if (!res.ok) {
+        const payload = await res.json();
+        throw new Error(payload?.error || 'Erro ao atualizar operação');
+      }
+      const updated: TradeOperation = await res.json();
+      setOperations(prev => sortOps(prev.map(o => (o.id === updated.id ? updated : o))));
+      setEditingOperation(null);
+    } catch (err) {
+      toast.error('Erro ao atualizar operação', {
+        description: err instanceof Error ? err.message : 'Erro desconhecido',
+      });
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingOperation(null);
   };
 
   const handleSendTelegramTest = async () => {
@@ -561,6 +647,58 @@ export default function Home() {
                           {mt5Status.orders ?? '--'}
                         </div>
                       </div>
+                      <div className="rounded-xl border border-border/70 bg-secondary/50 p-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Build
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-foreground">
+                          {mt5Status.build || '--'}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-secondary/50 p-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Modo
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-foreground">
+                          {mt5Status.accountMode || '--'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-border/70 bg-secondary/35 p-4">
+                      <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Leitura atual do MT5
+                      </div>
+                      <div className="space-y-2 text-sm">
+                        <div className="flex items-start justify-between gap-4">
+                          <span className="text-muted-foreground">Instalacao</span>
+                          <span className="max-w-[70%] break-all text-right font-medium text-foreground">
+                            {mt5Status.installPath || '--'}
+                          </span>
+                        </div>
+                        <div className="flex items-start justify-between gap-4">
+                          <span className="text-muted-foreground">Pasta de dados</span>
+                          <span className="max-w-[70%] break-all text-right font-medium text-foreground">
+                            {mt5Status.dataPath || '--'}
+                          </span>
+                        </div>
+                        <div className="flex items-start justify-between gap-4">
+                          <span className="text-muted-foreground">Ultimo log</span>
+                          <span className="max-w-[70%] break-all text-right font-medium text-foreground">
+                            {mt5Status.latestLogFile || '--'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {mt5Status.notes.length ? (
+                        <div className="mt-4 space-y-2">
+                          {mt5Status.notes.map(note => (
+                            <div key={note} className="rounded-lg bg-background/70 px-3 py-2 text-sm text-muted-foreground">
+                              {note}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
 
                     <div className="rounded-xl border border-border/70 bg-slate-950 p-4 text-slate-100">
@@ -568,9 +706,12 @@ export default function Home() {
                         <Database className="h-4 w-4" />
                         Ultimo diario do terminal
                       </div>
-                      <div className="space-y-2 text-[12px] leading-5">
-                        {mt5Status.recentLogEntries.slice(-5).map(line => (
-                          <div key={line} className="font-mono text-slate-200">
+                      <div className="max-h-60 space-y-2 overflow-y-auto pr-1 text-[12px] leading-5">
+                        {mt5Status.recentLogEntries.slice(-8).map(line => (
+                          <div
+                            key={line}
+                            className="rounded-md border border-slate-800 bg-slate-900/70 px-3 py-2 font-mono tracking-normal text-slate-200 whitespace-pre-wrap break-words"
+                          >
                             {line}
                           </div>
                         ))}
@@ -601,11 +742,30 @@ export default function Home() {
                           >
                             <div className="font-semibold text-foreground">{file.name}</div>
                             <div className="mt-1 text-xs text-muted-foreground">{file.location}</div>
+                            <div className="mt-1 break-all text-xs text-muted-foreground">{file.path}</div>
                           </div>
                         ))
                       ) : (
-                        <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
-                          Nenhum export estruturado foi encontrado em `MQL5\Files` ou `Common\Files`.
+                        <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                          <div>Nenhum export estruturado foi encontrado.</div>
+                          <div className="mt-3 space-y-2">
+                            <div>
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground/70">
+                                Pasta monitorada no terminal
+                              </div>
+                              <div className="mt-1 break-all text-xs">
+                                {mt5Status.terminalFilesPath || '--'}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground/70">
+                                Pasta monitorada comum
+                              </div>
+                              <div className="mt-1 break-all text-xs">
+                                {mt5Status.commonFilesPath || '--'}
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -933,17 +1093,6 @@ export default function Home() {
                     </Card>
                   </div>
 
-                  {mt5Status?.notes?.length ? (
-                    <Alert className="border border-primary/20 bg-primary/5">
-                      <Wifi className="h-4 w-4 text-primary" />
-                      <AlertTitle>Leitura atual do MT5</AlertTitle>
-                      <AlertDescription>
-                        {mt5Status.notes.map(note => (
-                          <p key={note}>{note}</p>
-                        ))}
-                      </AlertDescription>
-                    </Alert>
-                  ) : null}
                 </>
               )}
             </div>
@@ -955,6 +1104,10 @@ export default function Home() {
             onAddOperation={handleAddOperation}
             operations={operations}
             onDeleteOperation={handleDeleteOperation}
+            onEditOperation={handleEditOperation}
+            initialOperation={editingOperation}
+            onUpdateOperation={handleUpdateOperation}
+            onCancelEdit={handleCancelEdit}
           />
         )}
 

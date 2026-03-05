@@ -1,34 +1,23 @@
-import { TradeOperation, TaxCalculation, TaxDeclaration } from '@/types/operations';
+import { calculateOperationAmounts } from '@/lib/operationCalculator';
+import { TaxCalculation, TaxDeclaration, TradeOperation } from '@/types/operations';
 
-const BROKERAGE_FEE_RATE = 0.0001; // 0.01% de taxa de corretagem
 const DAY_TRADE_IR_RATE = 0.20; // 20% para day trade
 const SWING_TRADE_IR_RATE = 0.15; // 15% para swing trade
 const SWING_TRADE_MIN_DAYS = 1; // Mínimo de dias para considerar swing trade
 
 export class TaxCalculator {
   static calculateOperationTax(operation: TradeOperation): TaxCalculation {
-    if (operation.status !== 'CLOSED' || !operation.exitPrice || !operation.exitDate) {
+    if (operation.status !== 'CLOSED' || operation.exitPrice == null || !operation.exitDate) {
       throw new Error('Operação deve estar fechada com preço de saída');
     }
 
-    const entryValue = operation.quantity * operation.entryPrice;
-    const exitValue = operation.quantity * operation.exitPrice;
-    const brokerageFee = (entryValue + exitValue) * BROKERAGE_FEE_RATE;
-    
-    const grossProfit = operation.type === 'BUY' 
-      ? exitValue - entryValue 
-      : entryValue - exitValue;
-
-    const netProfit = grossProfit - brokerageFee;
-    
+    const { grossProfit, brokerageFee, netProfit } = calculateOperationAmounts(operation);
     const daysHeld = Math.floor(
       (operation.exitDate.getTime() - operation.entryDate.getTime()) / (1000 * 60 * 60 * 24)
     );
-
-    const isoDayTrade = daysHeld === 0;
-    const operationType = isoDayTrade ? 'DAY_TRADE' : 'SWING_TRADE';
-    const irRate = isoDayTrade ? DAY_TRADE_IR_RATE : SWING_TRADE_IR_RATE;
-    
+    const isDayTrade = daysHeld < SWING_TRADE_MIN_DAYS;
+    const operationType = isDayTrade ? 'DAY_TRADE' : 'SWING_TRADE';
+    const irRate = isDayTrade ? DAY_TRADE_IR_RATE : SWING_TRADE_IR_RATE;
     const taxableIncome = Math.max(0, netProfit);
     const irTax = taxableIncome * irRate;
 
@@ -45,12 +34,17 @@ export class TaxCalculator {
     };
   }
 
-  static calculateMonthlyDeclaration(operations: TradeOperation[], year: number, month: number): TaxDeclaration {
+  static calculateMonthlyDeclaration(
+    operations: TradeOperation[],
+    year: number,
+    month: number
+  ): TaxDeclaration {
     const closedOperations = operations.filter(
-      op => op.status === 'CLOSED' && 
-             op.exitDate && 
-             op.exitDate.getFullYear() === year && 
-             op.exitDate.getMonth() + 1 === month
+      (op) =>
+        op.status === 'CLOSED' &&
+        op.exitDate &&
+        op.exitDate.getFullYear() === year &&
+        op.exitDate.getMonth() + 1 === month
     );
 
     let totalBuyValue = 0;
@@ -68,12 +62,14 @@ export class TaxCalculator {
 
     for (const operation of closedOperations) {
       const tax = this.calculateOperationTax(operation);
-      
-      const opValue = operation.quantity * operation.entryPrice;
+      const { entryValue, exitValue } = calculateOperationAmounts(operation);
+
       if (operation.type === 'BUY') {
-        totalBuyValue += opValue;
+        totalBuyValue += entryValue;
+        totalSellValue += exitValue;
       } else {
-        totalSellValue += opValue;
+        totalSellValue += entryValue;
+        totalBuyValue += exitValue;
       }
 
       totalGrossProfit += tax.grossProfit;
@@ -114,9 +110,7 @@ export class TaxCalculator {
 
   static calculateAnnualDeclaration(operations: TradeOperation[], year: number): TaxDeclaration {
     const closedOperations = operations.filter(
-      op => op.status === 'CLOSED' && 
-             op.exitDate && 
-             op.exitDate.getFullYear() === year
+      (op) => op.status === 'CLOSED' && op.exitDate && op.exitDate.getFullYear() === year
     );
 
     let totalBuyValue = 0;
@@ -134,12 +128,14 @@ export class TaxCalculator {
 
     for (const operation of closedOperations) {
       const tax = this.calculateOperationTax(operation);
-      
-      const opValue = operation.quantity * operation.entryPrice;
+      const { entryValue, exitValue } = calculateOperationAmounts(operation);
+
       if (operation.type === 'BUY') {
-        totalBuyValue += opValue;
+        totalBuyValue += entryValue;
+        totalSellValue += exitValue;
       } else {
-        totalSellValue += opValue;
+        totalSellValue += entryValue;
+        totalBuyValue += exitValue;
       }
 
       totalGrossProfit += tax.grossProfit;

@@ -1,22 +1,39 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  calculateOperationAmounts,
+  formatOperationPrice,
+  getPriceInputStep,
+} from '@/lib/operationCalculator';
 import { TradeOperation } from '@/types/operations';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Edit2 } from 'lucide-react';
 
 interface OperationsFormProps {
   onAddOperation: (operation: TradeOperation) => void;
   operations: TradeOperation[];
   onDeleteOperation: (id: string) => void;
+  onEditOperation?: (operation: TradeOperation) => void;
+
+  // when provided, the form will load this operation for editing
+  initialOperation?: TradeOperation | null;
+  // called on submit when editing instead of onAddOperation
+  onUpdateOperation?: (operation: TradeOperation) => void;
+  onCancelEdit?: () => void;
 }
 
 export default function OperationsForm({
   onAddOperation,
   operations,
   onDeleteOperation,
+  onEditOperation,
+  initialOperation,
+  onUpdateOperation,
+  onCancelEdit,
 }: OperationsFormProps) {
+  const [priceInputStep, setPriceInputStep] = useState('0.001');
   const [formData, setFormData] = useState({
     type: 'BUY' as 'BUY' | 'SELL',
     symbol: 'WINJ26',
@@ -29,16 +46,53 @@ export default function OperationsForm({
     notes: '',
   });
 
+  // when the initialOperation prop changes we need to populate the form
+
+  // update local state when initialOperation changes
+  useEffect(() => {
+    if (initialOperation) {
+      setFormData({
+        type: initialOperation.type,
+        symbol: initialOperation.symbol,
+        quantity: initialOperation.quantity,
+        entryPrice: initialOperation.entryPrice,
+        exitPrice: initialOperation.exitPrice || 0,
+        entryDate: initialOperation.entryDate.toISOString().split('T')[0],
+        exitDate: initialOperation.exitDate
+          ? initialOperation.exitDate.toISOString().split('T')[0]
+          : '',
+        brokerageFee: initialOperation.brokerageFee,
+        notes: initialOperation.notes || '',
+      });
+    }
+  }, [initialOperation]);
+
+  useEffect(() => {
+    setPriceInputStep(getPriceInputStep(formData.symbol));
+  }, [formData.symbol]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
+    // validations
+    if (!formData.symbol.trim()) {
+      alert('Símbolo é obrigatório');
+      return;
+    }
+    if (formData.quantity <= 0) {
+      alert('Quantidade deve ser maior que zero');
+      return;
+    }
     if (!formData.exitDate) {
       alert('Data de saída é obrigatória');
       return;
     }
+    if (new Date(formData.exitDate) < new Date(formData.entryDate)) {
+      alert('Data de saída não pode ser anterior à entrada');
+      return;
+    }
 
-    const operation: TradeOperation = {
-      id: `${Date.now()}-${Math.random()}`,
+    const baseOp: Omit<TradeOperation, 'id'> = {
       type: formData.type,
       symbol: formData.symbol,
       quantity: formData.quantity,
@@ -51,8 +105,13 @@ export default function OperationsForm({
       status: 'CLOSED',
     };
 
-    onAddOperation(operation);
+    if (initialOperation && initialOperation.id && onUpdateOperation) {
+      onUpdateOperation({ ...baseOp, id: initialOperation.id });
+    } else {
+      onAddOperation({ ...baseOp, id: `${Date.now()}-${Math.random()}` });
+    }
 
+    // reset form after submit (and cancel edit if necessary)
     setFormData({
       type: 'BUY',
       symbol: 'WINJ26',
@@ -64,6 +123,9 @@ export default function OperationsForm({
       brokerageFee: 0,
       notes: '',
     });
+    if (initialOperation && onCancelEdit) {
+      onCancelEdit();
+    }
   };
 
   return (
@@ -111,7 +173,7 @@ export default function OperationsForm({
               <Label className="text-sm font-medium text-foreground">Preço de Entrada</Label>
               <Input
                 type="number"
-                step="0.01"
+                step={priceInputStep}
                 value={formData.entryPrice}
                 onChange={(e) => setFormData({ ...formData, entryPrice: Number(e.target.value) })}
                 className="mt-2"
@@ -122,7 +184,7 @@ export default function OperationsForm({
               <Label className="text-sm font-medium text-foreground">Preço de Saída</Label>
               <Input
                 type="number"
-                step="0.01"
+                step={priceInputStep}
                 value={formData.exitPrice}
                 onChange={(e) => setFormData({ ...formData, exitPrice: Number(e.target.value) })}
                 className="mt-2"
@@ -171,10 +233,22 @@ export default function OperationsForm({
             />
           </div>
 
-          <Button type="submit" className="w-full bg-chart-1 text-white hover:bg-chart-1/90">
-            <Plus size={18} className="mr-2" />
-            Adicionar Operação
-          </Button>
+          <div className="flex gap-2">
+            <Button type="submit" className="flex-1 bg-chart-1 text-white hover:bg-chart-1/90">
+              <Plus size={18} className="mr-2" />
+              {initialOperation ? 'Salvar Alterações' : 'Adicionar Operação'}
+            </Button>
+            {initialOperation && onCancelEdit && (
+              <Button
+                type="button"
+                variant="secondary"
+                className="flex-1"
+                onClick={onCancelEdit}
+              >
+                Cancelar
+              </Button>
+            )}
+          </div>
         </form>
       </Card>
 
@@ -196,10 +270,7 @@ export default function OperationsForm({
               </thead>
               <tbody>
                 {operations.map((op) => {
-                  const entryValue = op.quantity * op.entryPrice;
-                  const exitValue = op.quantity * (op.exitPrice || 0);
-                  const grossProfit = op.type === 'BUY' ? exitValue - entryValue : entryValue - exitValue;
-                  const netProfit = grossProfit - op.brokerageFee;
+                  const { netProfit } = calculateOperationAmounts(op);
 
                   return (
                     <tr key={op.id} className="border-b border-border hover:bg-secondary">
@@ -214,12 +285,20 @@ export default function OperationsForm({
                       </td>
                       <td className="py-2 px-2">{op.symbol}</td>
                       <td className="py-2 px-2">{op.quantity}</td>
-                      <td className="py-2 px-2">R$ {op.entryPrice.toFixed(2)}</td>
-                      <td className="py-2 px-2">R$ {op.exitPrice?.toFixed(2)}</td>
+                      <td className="py-2 px-2">{formatOperationPrice(op.entryPrice, op.symbol)}</td>
+                      <td className="py-2 px-2">{formatOperationPrice(op.exitPrice, op.symbol)}</td>
                       <td className={`py-2 px-2 font-semibold ${netProfit >= 0 ? 'text-chart-1' : 'text-chart-2'}`}>
                         R$ {netProfit.toFixed(2)}
                       </td>
-                      <td className="py-2 px-2">
+                      <td className="py-2 px-2 flex gap-2">
+                        {onEditOperation && (
+                          <button
+                            onClick={() => onEditOperation(op)}
+                            className="text-chart-1 hover:text-chart-1/80"
+                          >
+                            <Edit2 size={16} />
+                          </button>
+                        )}
                         <button
                           onClick={() => onDeleteOperation(op.id)}
                           className="text-chart-2 hover:text-chart-2/80"

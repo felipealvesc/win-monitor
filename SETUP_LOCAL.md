@@ -24,6 +24,25 @@ cd win-monitor
 
 ## Passo 2: Configurar Token da API (Importante!)
 
+### Caminho do MetaTrader 5 (opcional)
+
+Se você pretende utilizar a funcionalidade de leitura de dados do MetaTrader 5,
+verifique que o terminal esteja instalado no caminho padrão `C:\Program Files\MetaTrader 5 Terminal`.
+
+Caso o MT5 esteja em um local diferente (por exemplo, instalação portátil), crie
+ou atualize a variável de ambiente `MT5_INSTALL_PATH` apontando para a pasta
+da instalação antes de iniciar o servidor.
+
+Exemplo no Windows (PowerShell):
+
+```powershell
+$env:MT5_INSTALL_PATH = 'C:\Program Files\MetaTrader 5 Terminal'
+npm run dev
+```
+
+A aplicação exibirá notas com o caminho pesquisado caso não encontre a instalação.
+
+
 O projeto ja vem com dados simulados realistas para teste. Voce pode usar imediatamente!
 
 ### Como obter o token:
