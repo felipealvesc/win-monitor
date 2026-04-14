@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.gitignore
+.manus-logs
+.env
+python_api/.venv
+python_api/__pycache__
+**/__pycache__
+*.log
