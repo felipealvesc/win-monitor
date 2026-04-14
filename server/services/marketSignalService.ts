@@ -35,6 +35,7 @@ export interface SignalEvaluation {
   confidence: number;
   currentPrice: number;
   changePercent: number;
+  changePoints: number;
   volumeRatio: number;
   rsi: number;
   support: number;
@@ -301,7 +302,7 @@ export class MarketSignalService {
         : false;
 
     const reasons = [
-      `Sessao ${quote.changePercent >= 0 ? '+' : ''}${quote.changePercent.toFixed(2)}%`,
+      `Sessao ${quote.changePercent >= 0 ? '+' : ''}${quote.changePercent.toFixed(2)}% (${quote.changePoints >= 0 ? '+' : ''}${quote.changePoints} pts)`,
       `Tendencias ${trendAnalysis.map(item => `${item.timeframe}:${item.trend}`).join(' | ')}`,
       `Volume ${volumeRatio.toFixed(2)}x da media intradiaria`,
       `RSI ${rsi.toFixed(1)} e fechamento ${quote.currentPrice.toFixed(0)}`,
@@ -316,6 +317,7 @@ export class MarketSignalService {
       confidence: round(confidence),
       currentPrice: quote.currentPrice,
       changePercent: quote.changePercent,
+      changePoints: quote.changePoints,
       volumeRatio,
       rsi,
       support,

@@ -13,7 +13,7 @@ const formatSignalMessage = (evaluation: Awaited<ReturnType<typeof MarketSignalS
     `Sinal: <b>${evaluation.signal}</b>`,
     `Chance: <b>${evaluation.confidence.toFixed(0)}%</b>`,
     `Preco: <b>${evaluation.currentPrice.toFixed(0)}</b>`,
-    `Variacao: <b>${evaluation.changePercent >= 0 ? '+' : ''}${evaluation.changePercent.toFixed(2)}%</b>`,
+    `Variacao: <b>${evaluation.changePercent >= 0 ? '+' : ''}${evaluation.changePercent.toFixed(2)}% (${evaluation.changePoints >= 0 ? '+' : ''}${evaluation.changePoints} pts)</b>`,
     `RSI: <b>${evaluation.rsi.toFixed(1)}</b>`,
     `Volume relativo: <b>${evaluation.volumeRatio.toFixed(2)}x</b>`,
     `Suporte/Resistencia: <b>${evaluation.support.toFixed(0)} / ${evaluation.resistance.toFixed(0)}</b>`,
@@ -30,6 +30,7 @@ export class TelegramSignalMonitor {
   private readonly symbol = (process.env.SIGNAL_SYMBOL || 'WINJ26').toUpperCase();
   private readonly intervalMinutes = Number(process.env.SIGNAL_CHECK_INTERVAL_MINUTES || 15);
   private readonly minConfidence = Number(process.env.SIGNAL_MIN_CONFIDENCE || 80);
+  private readonly minChangePoints = Number(process.env.SIGNAL_MIN_CHANGE_POINTS || 2500);
   private readonly sendWaitSignals = process.env.SIGNAL_SEND_WAIT === 'true';
 
   start() {
@@ -66,14 +67,17 @@ export class TelegramSignalMonitor {
           return;
         }
 
-        if (evaluation.confidence < this.minConfidence) {
+        const reachedPointsTrigger = Math.abs(evaluation.changePoints) >= this.minChangePoints;
+        const reachedConfidenceTrigger = evaluation.confidence >= this.minConfidence;
+
+        if (!reachedPointsTrigger && !reachedConfidenceTrigger) {
           console.log(
-            `TelegramSignalMonitor: chance ${evaluation.confidence}% abaixo do minimo ${this.minConfidence}% para ${this.symbol}.`
+            `TelegramSignalMonitor: sem gatilho em ${this.symbol}. Variacao ${evaluation.changePoints} pts (min ${this.minChangePoints}) e chance ${evaluation.confidence}% (min ${this.minConfidence}%).`
           );
           return;
         }
 
-        if (!this.sendWaitSignals && evaluation.signal === 'WAIT') {
+        if (!reachedPointsTrigger && !this.sendWaitSignals && evaluation.signal === 'WAIT') {
           console.log(
             `TelegramSignalMonitor: chance alta, mas sinal WAIT. Ajuste SIGNAL_SEND_WAIT=true se quiser enviar assim mesmo.`
           );
@@ -93,7 +97,9 @@ export class TelegramSignalMonitor {
 
         this.lastSentSignature = evaluation.signature;
         console.log(
-          `TelegramSignalMonitor: alerta enviado para ${this.symbol} com ${evaluation.confidence}% de chance.`
+          reachedPointsTrigger
+            ? `TelegramSignalMonitor: alerta enviado para ${this.symbol} por variacao de ${evaluation.changePoints} pts.`
+            : `TelegramSignalMonitor: alerta enviado para ${this.symbol} com ${evaluation.confidence}% de chance.`
         );
       } catch (error) {
         console.error('TelegramSignalMonitor error:', error);
@@ -106,7 +112,7 @@ export class TelegramSignalMonitor {
     this.intervalId = setInterval(execute, this.intervalMinutes * MINUTE_MS);
 
     console.log(
-      `TelegramSignalMonitor iniciado para ${this.symbol} a cada ${this.intervalMinutes} minutos. Minimo ${this.minConfidence}%.`
+      `TelegramSignalMonitor iniciado para ${this.symbol} a cada ${this.intervalMinutes} minutos. Minimo ${this.minConfidence}% ou variacao de ${this.minChangePoints} pts.`
     );
   }
 

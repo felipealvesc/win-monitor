@@ -37,7 +37,9 @@ router.get('/telegram/test', async (_req: Request, res: Response) => {
       lines.push(`Sinal atual: <b>${evaluation.signal}</b>`);
       lines.push(`Chance atual: <b>${evaluation.confidence.toFixed(0)}%</b>`);
       lines.push(`Preco: <b>${evaluation.currentPrice.toFixed(0)}</b>`);
-      lines.push(`Variacao: <b>${evaluation.changePercent >= 0 ? '+' : ''}${evaluation.changePercent.toFixed(2)}%</b>`);
+      lines.push(
+        `Variacao: <b>${evaluation.changePercent >= 0 ? '+' : ''}${evaluation.changePercent.toFixed(2)}% (${evaluation.changePoints >= 0 ? '+' : ''}${evaluation.changePoints} pts)</b>`
+      );
     } else {
       lines.push('Nao foi possivel montar a avaliacao atual do mercado, mas o bot respondeu ao teste.');
     }
